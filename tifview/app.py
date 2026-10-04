@@ -5,23 +5,26 @@ import os
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize
-from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QIcon, QImage, QPainter, QPixmap, QKeySequence
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QPointF, QRectF
+from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox,
-    QFileDialog, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QHBoxLayout,
+    QFileDialog, QFontComboBox, QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QHBoxLayout, QInputDialog,
     QLabel, QMainWindow, QMessageBox, QPushButton, QSlider, QSplitter, QTextEdit,
-    QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QSpinBox, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .model import ImageDocument
 from .reader import load_image
 from .render import render
+from .editing import EditSession, raster_shape
+from .writer import SaveOptions, layer_preservation_reason, save_tiff_copy
 
 
 class ImageView(QGraphicsView):
     zoom_changed = Signal(float)
     pixel_hovered = Signal(int, int)
+    draw_requested = Signal(str, object, object)
 
     def __init__(self):
         super().__init__()
@@ -36,6 +39,54 @@ class ImageView(QGraphicsView):
         self.setMouseTracking(True)
         self.fitted = True
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+        self.tool = "Pan"
+        self.stroke_width = 3
+        self.filled = False
+        self._drawing_start = None
+        self._pan_position = None
+        self.preview_item = QGraphicsPathItem()
+        self.preview_item.setZValue(1)
+        self.scene().addItem(self.preview_item)
+
+    def set_tool(self, tool):
+        self.tool = tool
+        self._drawing_start = None
+        self.preview_item.setPath(QPainterPath())
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag if tool == "Pan" else QGraphicsView.DragMode.NoDrag)
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor if tool == "Pan" else Qt.CursorShape.CrossCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._pan_position = event.position().toPoint()
+            event.accept()
+            return
+        if self.tool != "Pan" and event.button() == Qt.MouseButton.LeftButton:
+            point = self.mapToScene(event.position().toPoint())
+            if self.image_item.pixmap().isNull() or not self.sceneRect().contains(point):
+                event.accept()
+                return
+            if self.tool == "Text":
+                self.draw_requested.emit(self.tool, (point.x(), point.y()), (point.x(), point.y()))
+            else:
+                self._drawing_start = point
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._pan_position = None
+            event.accept()
+            return
+        if self._drawing_start is not None and event.button() == Qt.MouseButton.LeftButton:
+            start = self._drawing_start
+            end = self.mapToScene(event.position().toPoint())
+            self._drawing_start = None
+            self.preview_item.setPath(QPainterPath())
+            self.draw_requested.emit(self.tool, (start.x(), start.y()), (end.x(), end.y()))
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def set_image(self, array: np.ndarray, reset: bool = False):
         h, w, _ = array.shape
@@ -81,6 +132,29 @@ class ImageView(QGraphicsView):
         point = self.mapToScene(event.position().toPoint())
         # floor, since int(-0.5) would incorrectly inspect the first pixel.
         self.pixel_hovered.emit(int(np.floor(point.x())), int(np.floor(point.y())))
+        if self._pan_position is not None:
+            position = event.position().toPoint()
+            delta = position - self._pan_position
+            self._pan_position = position
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            event.accept()
+            return
+        if self._drawing_start is not None:
+            path = QPainterPath()
+            rect = QRectF(self._drawing_start, point).normalized()
+            if self.tool == "Ellipse":
+                path.addEllipse(rect)
+            elif self.tool == "Box":
+                path.addRect(rect)
+            else:
+                path.moveTo(self._drawing_start)
+                path.lineTo(point)
+            self.preview_item.setPath(path)
+            self.preview_item.setPen(QPen(QColor("#00a6c4"), self.stroke_width))
+            self.preview_item.setBrush(QColor(0, 166, 196, 80) if self.filled and self.tool != "Line" else Qt.BrushStyle.NoBrush)
+            event.accept()
+            return
         super().mouseMoveEvent(event)
 
 
@@ -102,13 +176,72 @@ class Loader(QThread):
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
+class Saver(QThread):
+    saved = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, original, edited, filename, options, overwrite):
+        super().__init__()
+        self.arguments = original, edited, filename, options, overwrite
+
+    def run(self):
+        try:
+            path = save_tiff_copy(*self.arguments)
+            self.saved.emit(str(path))
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
+class TiffSaveDialog(QDialog):
+    def __init__(self, original, edited, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("TIFF save settings")
+        layout = QVBoxLayout(self)
+        label = QLabel("Photoshop TIFF preset\nLZW image compression · Interleaved samples\n"
+                       "IBM-PC byte order · Classic TIFF (BigTIFF off)\n"
+                       "Original bit depth, print resolution, channels, transparency and ICC profile")
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        self.pyramid = QCheckBox("Save image pyramid (rebuild from edited pixels)")
+        self.pyramid.setChecked(True)
+        layout.addWidget(self.pyramid)
+        self.layers = QCheckBox("Retain original Photoshop layers")
+        has_layers = bool(original.metadata.get("has_photoshop_layers"))
+        reason = layer_preservation_reason(original, edited)
+        self.layers.setChecked(has_layers and reason is None)
+        self.layers.setEnabled(has_layers and reason is None)
+        layout.addWidget(self.layers)
+        if reason:
+            explanation = reason + "\nThis copy will contain the merged image and all channels without Photoshop layers. "
+            if original.metadata.get("byte_order") == "IBM PC (little endian)":
+                explanation += "To retain layers, undo the process/transparency edits."
+        elif has_layers:
+            explanation = "Spot and saved-mask edits retain the original layer block, including its existing RLE/ZIP compression."
+        else:
+            explanation = "The source has no Photoshop layers. All image and extra channel pixels are saved."
+        explanation += "\nThe source image stays untouched. Check the first edited copy in Photoshop and your RIP."
+        notice = QLabel(explanation)
+        notice.setWordWrap(True)
+        layout.addWidget(notice)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.resize(560, 300)
+
+    def options(self):
+        return SaveOptions(keep_layers=self.layers.isChecked(), pyramid=self.pyramid.isChecked())
+
+
 class ViewerWindow(QMainWindow):
     def __init__(self, initial_path: str | None = None):
         super().__init__()
         self.doc: ImageDocument | None = None
         self.loader: Loader | None = None
+        self.saver: Saver | None = None
+        self.edits: EditSession | None = None
         self.colors: dict[int, tuple[int, int, int]] = {}
-        self.setWindowTitle("TIFview — read-only channel inspector")
+        self.setWindowTitle("TIFview — channel viewer and pixel editor")
         self.resize(1200, 800)
         self.setMinimumSize(820, 540)
         self.setAcceptDrops(True)
@@ -119,6 +252,18 @@ class ViewerWindow(QMainWindow):
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
         self.open_action.triggered.connect(self.choose_file)
         toolbar.addAction(self.open_action)
+        self.save_action = QAction("Save TIFF copy…", self)
+        self.save_action.setShortcut("Ctrl+Shift+S")
+        self.save_action.triggered.connect(self.choose_save)
+        toolbar.addAction(self.save_action)
+        self.undo_action = QAction("Undo", self)
+        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_action.triggered.connect(self.undo)
+        toolbar.addAction(self.undo_action)
+        self.redo_action = QAction("Redo", self)
+        self.redo_action.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
+        self.redo_action.triggered.connect(self.redo)
+        toolbar.addAction(self.redo_action)
         toolbar.addSeparator()
         for label, shortcut, callback in [
             ("Fit", "F", self.fit), ("100%", "1", self.actual),
@@ -136,6 +281,42 @@ class ViewerWindow(QMainWindow):
         self.metadata_action.triggered.connect(self.show_details)
         self.metadata_action.setEnabled(False)
         toolbar.addAction(self.metadata_action)
+
+        self.edit_toolbar = QToolBar("Pixel edits")
+        self.edit_toolbar.setMovable(False)
+        self.addToolBarBreak()
+        self.addToolBar(self.edit_toolbar)
+        self.tool_combo = QComboBox()
+        self.tool_combo.addItems(["Pan", "Ellipse", "Box", "Line", "Text"])
+        self.edit_toolbar.addWidget(QLabel("Tool "))
+        self.edit_toolbar.addWidget(self.tool_combo)
+        self.shade = QSpinBox()
+        self.shade.setRange(0, 255)
+        self.shade.setToolTip("Paint shade: 0 = black, maximum = white in the selected grayscale channel. Intermediate values paint gray.")
+        self.edit_toolbar.addWidget(QLabel("  Shade "))
+        self.edit_toolbar.addWidget(self.shade)
+        self.stroke = QSpinBox()
+        self.stroke.setRange(1, 300)
+        self.stroke.setValue(3)
+        self.stroke.setSuffix(" px")
+        self.stroke.setToolTip("Stroke width in original image pixels")
+        self.edit_toolbar.addWidget(QLabel("  Width "))
+        self.edit_toolbar.addWidget(self.stroke)
+        self.fill = QCheckBox("Filled")
+        self.edit_toolbar.addWidget(self.fill)
+        self.text_size = QSpinBox()
+        self.text_size.setRange(1, 1000)
+        self.text_size.setValue(72)
+        self.text_size.setSuffix(" px")
+        self.edit_toolbar.addWidget(QLabel("  Text "))
+        self.edit_toolbar.addWidget(self.text_size)
+        self.font_combo = QFontComboBox()
+        self.font_combo.setMaximumWidth(150)
+        self.edit_toolbar.addWidget(self.font_combo)
+        self.edit_toolbar.addWidget(QLabel("  Select one channel to edit its pixels"))
+        self.tool_combo.currentTextChanged.connect(self.change_tool)
+        self.stroke.valueChanged.connect(self.drawing_style_changed)
+        self.fill.toggled.connect(self.drawing_style_changed)
 
         sidebar = QWidget()
         layout = QVBoxLayout(sidebar)
@@ -157,7 +338,7 @@ class ViewerWindow(QMainWindow):
         layout.addWidget(self.channels, 1)
         self.style_combo = QComboBox()
         self.style_combo.addItems(["Grayscale channel", "Coloured mask"])
-        self.style_combo.currentIndexChanged.connect(lambda *_: self.refresh())
+        self.style_combo.currentIndexChanged.connect(self.display_style_changed)
         layout.addWidget(self.style_combo)
         self.invert = QCheckBox("Invert selected channel display")
         self.invert.toggled.connect(lambda *_: self.refresh())
@@ -181,13 +362,14 @@ class ViewerWindow(QMainWindow):
         self.channel_info = QLabel("Select a channel for grayscale. Tick channels to change the composite.")
         self.channel_info.setWordWrap(True)
         layout.addWidget(self.channel_info)
-        self.notice = QLabel("Read-only prototype\nPhotoshop spot-channel validation pending")
+        self.notice = QLabel("Photoshop TIFF export needs Photoshop and RIP validation")
         self.notice.setWordWrap(True)
         self.notice.setStyleSheet("background: #fff0cb; color: #563a00; padding: 8px;")
         layout.addWidget(self.notice)
         self.view = ImageView()
         self.view.zoom_changed.connect(lambda value: self.zoom_label.setText(f" {value * 100:.1f}% "))
         self.view.pixel_hovered.connect(self.inspect_pixel)
+        self.view.draw_requested.connect(self.apply_drawing)
         self.splitter = QSplitter()
         self.splitter.addWidget(sidebar)
         self.splitter.addWidget(self.view)
@@ -212,7 +394,9 @@ class ViewerWindow(QMainWindow):
             self.open_path(filename)
 
     def open_path(self, path: str):
-        if self.loader is not None:
+        if self.loader is not None or self.saver is not None:
+            return
+        if not self.confirm_discard():
             return
         self.open_action.setEnabled(False)
         self.statusBar().showMessage(f"Reading {Path(path).name}…")
@@ -221,12 +405,14 @@ class ViewerWindow(QMainWindow):
         self.loader.failed.connect(self.load_failed)
         self.loader.finished.connect(self.load_finished)
         self.loader.start()
+        self.set_controls()
 
     def load_finished(self):
         loader, self.loader = self.loader, None
         if loader:
             loader.deleteLater()
         self.open_action.setEnabled(True)
+        self.set_controls()
 
     def load_failed(self, message: str):
         QMessageBox.warning(self, "Could not open image", message)
@@ -234,12 +420,14 @@ class ViewerWindow(QMainWindow):
 
     def accept_document(self, doc: ImageDocument, preview: np.ndarray):
         self.doc = doc
+        self.edits = EditSession(doc)
         self.colors = {}
         self.file_label.setText(doc.path.name)
         self.file_label.setToolTip(str(doc.path))
         self.dimensions.setText(f"{doc.width:,} × {doc.height:,} px · {doc.bits}-bit {doc.color_mode}\n"
                                 f"{len(doc.channels)} samples · {doc.samples.nbytes / 2**20:.1f} MiB raw")
-        self.setWindowTitle(f"{doc.path.name} — TIFview (read-only)")
+        self.setWindowTitle(f"{doc.path.name}[*] — TIFview")
+        self.setWindowModified(False)
         self.channels.blockSignals(True)
         self.channels.clear()
         composite = QTreeWidgetItem(["Composite", doc.color_mode])
@@ -291,6 +479,122 @@ class ViewerWindow(QMainWindow):
         self.view.set_image(preview, reset=True)
         self.statusBar().showMessage("Source untouched · Wheel: zoom · Drag: pan · F: fit · 1: actual pixels")
 
+    def change_tool(self, tool):
+        self.view.set_tool(tool)
+        if tool != "Pan":
+            self.style_combo.setCurrentIndex(0)
+        self.drawing_style_changed()
+
+    def display_style_changed(self, index):
+        if index == 1:
+            self.tool_combo.setCurrentIndex(0)
+        self.refresh()
+
+    def drawing_style_changed(self, *_):
+        self.view.stroke_width = self.stroke.value()
+        self.view.filled = self.fill.isChecked()
+
+    def apply_drawing(self, tool, start, end, text=None):
+        index = self.selected_index()
+        if self.edits is None or index is None or self.saver is not None or self.loader is not None:
+            return
+        if tool == "Text" and text is None:
+            text, accepted = QInputDialog.getMultiLineText(self, "Paint text into channel", "Text:")
+            if not accepted:
+                return
+        try:
+            mask = raster_shape(tool, start, end, (self.doc.width, self.doc.height), self.stroke.value(),
+                                self.fill.isChecked(), text or "", self.font_combo.currentFont().family(),
+                                self.text_size.value())
+            if mask and self.edits.apply(index, *mask, self.shade.value(), self.invert.isChecked()):
+                self.edits_changed()
+                self.statusBar().showMessage(f"Painted {tool.lower()} into {self.doc.channels[index].name} · Ctrl+Z: undo · Save TIFF copy to keep edits")
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not paint channel", str(exc))
+
+    def edits_changed(self):
+        self.doc = self.edits.document
+        self.setWindowModified(self.edits.dirty)
+        self.set_controls()
+        self.refresh()
+        self.refresh_thumbnails()
+
+    def refresh_thumbnails(self):
+        self.channels.blockSignals(True)
+        try:
+            self._refresh_thumbnails()
+        finally:
+            self.channels.blockSignals(False)
+
+    def _refresh_thumbnails(self):
+        for channel in self.doc.channels:
+            plane = self.doc.display_samples[::max(1, self.doc.height // 80), ::max(1, self.doc.width // 120), channel.index]
+            gray = np.rint(plane.astype(np.float32) / self.doc.maximum * 255).astype(np.uint8)
+            if (self.doc.color_mode == "CMYK" and channel.index < self.doc.base_count) or (self.doc.color_mode == "WhiteIsZero" and channel.index == 0):
+                gray = 255 - gray
+            gray = np.ascontiguousarray(gray)
+            image = QImage(gray.data, gray.shape[1], gray.shape[0], gray.strides[0], QImage.Format.Format_Grayscale8).copy()
+            self.channels.topLevelItem(channel.index + 1).setIcon(0, QIcon(QPixmap.fromImage(image).scaled(
+                40, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)))
+
+    def undo(self):
+        if self.edits and self.saver is None and self.loader is None:
+            self.edits.undo()
+            self.edits_changed()
+
+    def redo(self):
+        if self.edits and self.saver is None and self.loader is None:
+            self.edits.redo()
+            self.edits_changed()
+
+    def confirm_discard(self):
+        if not self.edits or not self.edits.dirty:
+            return True
+        answer = QMessageBox.question(self, "Unsaved channel edits", "Discard unsaved pixel edits? The original source file is unchanged.",
+                                      QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                                      QMessageBox.StandardButton.Cancel)
+        return answer == QMessageBox.StandardButton.Discard
+
+    def choose_save(self):
+        if self.edits is None or self.saver is not None or self.loader is not None:
+            return
+        dialog = TiffSaveDialog(self.edits.original, self.doc, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        initial = self.doc.path.with_name(self.doc.path.stem + ".edited.tif")
+        filename, _ = QFileDialog.getSaveFileName(self, "Save edited TIFF copy", str(initial), "TIFF (*.tif *.tiff)")
+        if filename:
+            if not Path(filename).suffix:
+                filename += ".tif"
+            self.save_copy(filename, dialog.options(), overwrite=True)
+
+    def save_copy(self, filename, options=SaveOptions(), overwrite=False):
+        if self.edits is None or self.saver is not None or self.loader is not None:
+            return
+        self.tool_combo.setCurrentIndex(0)
+        self.saver = Saver(self.edits.original, self.doc, filename, options, overwrite)
+        self.saver.saved.connect(self.copy_saved)
+        self.saver.failed.connect(self.save_failed)
+        self.saver.finished.connect(self.save_finished)
+        self.set_controls()
+        self.statusBar().showMessage("Saving and checking TIFF copy…")
+        self.saver.start()
+
+    def copy_saved(self, filename):
+        self.edits.mark_saved()
+        self.setWindowModified(False)
+        self.statusBar().showMessage(f"Saved and verified: {filename} · Original source unchanged")
+
+    def save_failed(self, message):
+        QMessageBox.warning(self, "Could not save TIFF copy", message)
+        self.statusBar().showMessage("TIFF copy was not saved; edits are still in memory")
+
+    def save_finished(self):
+        saver, self.saver = self.saver, None
+        if saver:
+            saver.deleteLater()
+        self.set_controls()
+
     def selected_index(self) -> int | None:
         item = self.channels.currentItem()
         value = item.data(0, Qt.ItemDataRole.UserRole) if item else -1
@@ -298,6 +602,18 @@ class ViewerWindow(QMainWindow):
 
     def set_controls(self):
         selected = self.selected_index() if self.doc else None
+        busy = self.loader is not None or self.saver is not None
+        editable = self.doc is not None and self.doc.bits in (8, 16) and self.doc.color_mode != "Palette"
+        self.open_action.setEnabled(not busy)
+        self.save_action.setEnabled(editable and not busy)
+        self.undo_action.setEnabled(bool(self.edits and self.edits.can_undo and not busy))
+        self.redo_action.setEnabled(bool(self.edits and self.edits.can_redo and not busy))
+        self.edit_toolbar.setEnabled(editable and selected is not None and not busy)
+        if not editable or selected is None or busy:
+            self.tool_combo.setCurrentIndex(0)
+            self.view.set_tool("Pan")
+        if self.doc:
+            self.shade.setMaximum(self.doc.maximum)
         self.style_combo.setEnabled(selected is not None)
         self.invert.setEnabled(selected is not None)
         self.color_button.setEnabled(selected is not None)
@@ -403,8 +719,10 @@ class ViewerWindow(QMainWindow):
 
     def closeEvent(self, event):
         # A decoder cannot safely be terminated midway through a codec operation.
-        if self.loader is not None and self.loader.isRunning():
-            self.statusBar().showMessage("Please wait for the image read to finish before closing.")
+        if (self.loader is not None and self.loader.isRunning()) or (self.saver is not None and self.saver.isRunning()):
+            self.statusBar().showMessage("Please wait for the image read/save to finish before closing.")
+            event.ignore()
+        elif not self.confirm_discard():
             event.ignore()
         else:
             event.accept()

@@ -3,7 +3,9 @@
 ## Supplied Photoshop file
 
 Source: `D:\Download2\SPacificPrint\jobs\Bailey\Back 360dpi V6a (10%)spot34-wv.tif`.
-The file stays in its original directory. It has not been copied into the project.
+The original stays in its original directory. A separate edited validation copy
+is stored under ignored `validation/local/editing/`; no private TIFF is committed,
+uploaded to CI or included in a release.
 
 SHA-256 before and after loading, rendering every channel and selecting all
 channels through the Qt UI:
@@ -85,5 +87,43 @@ not independent Photoshop pixel values.
    codec fixtures already pass, but these real Photoshop save variants remain
    unverified. BigTIFF and very large production files need their own checks.
 
-Annotations, sidecars, annotated PNG/PDF export and production TIFF editing are
-not part of this prototype's verified functionality.
+## Pixel-edit and save validation
+
+Local validation paints an ellipse, box, line and `TIFview TEST` text into
+**w-back**. Exact undo/redo restores each previous/next native array. The exported
+`validation/local/editing/Bailey-w-back-edited-test.tif` is reopened and checked:
+
+- All nine native sample planes match the edited in-memory document exactly;
+  only w-back differs from the source. The other eight planes stay unchanged.
+- Channel names/types, preview colours and solidity remain unchanged. Photoshop
+  resource blocks are identical except the removed cached thumbnail (1036).
+- ICC profile and the 6,853,704-byte Photoshop layer block are byte-identical.
+  Original RLE layer compression and unknown layer tags are retained.
+- 360 dpi, associated transparency, 8-bit samples, LZW image compression,
+  interleaved samples, IBM-PC byte order and classic TIFF are verified.
+- A 614 × 391, nine-channel pyramid is rebuilt from the edited pixels.
+- Original SHA-256 remains the value recorded above.
+
+The same directory contains `w-back-edited.png`, `viewer-edited.png`,
+`save-settings.png` and `report.json`. These are local validation artifacts;
+the TIFF deliberately contains test marks in a spot channel.
+
+Automated synthetic tests additionally cover native 16-bit edits, all eight
+orientations, clipping, antialiased edges, filled/outline shapes, CMYK shade
+polarity, coupled associated-alpha edits, history limits/save checkpoints,
+layer-retention restrictions, odd-sized pyramids, cached-thumbnail removal,
+external source changes and original/hardlink protection. A GUI test draws
+with actual mouse events, uses keyboard undo/redo and saves via the worker.
+The packaged executable paints all four tools and saves/reopens a layered
+RGB+spot fixture without a Python installation.
+
+**Photoshop reopening and target-RIP compatibility remain unverified.** Open
+the edited validation copy in Photoshop, compare w-back at 100%, inspect the
+other channels and original layers, and check channel options/solidity and
+360 dpi. Then import that same copy into the target RIP and verify spot mapping,
+resolution and the edited mask. The RIP name/version has not been supplied.
+The internal read-back checks alone do not establish production compatibility.
+
+Reference annotation objects, sidecars and annotated PNG/PDF export remain
+planned. Current drawing tools burn pixels into the selected channel and save
+them to a separate TIFF; undo history is not persisted.

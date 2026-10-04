@@ -25,7 +25,7 @@ def photoshop_resources(names, modes, colors=None, legacy=False, solidity=100):
             resource(1007 if legacy else 1077, display if legacy else struct.pack(">I", 1) + display))
 
 
-def make_demo(path: Path):
+def make_demo(path: Path, layers: bool = False):
     h, w = 500, 720
     y, x = np.ogrid[:h, :w]
     data = np.full((h, w, 6), 255, np.uint8)
@@ -40,9 +40,20 @@ def make_demo(path: Path):
     resources = photoshop_resources(["White Ink", "Varnish", "Saved selection"], [2, 2, 0],
                                     [(65535, 65535, 65535, 0), (0, 50000, 65535, 0), (65535, 0, 0, 0)])
     path.parent.mkdir(parents=True, exist_ok=True)
+    tags = [(34377, 7, len(resources), resources, False)]
+    profile = None
+    if layers:
+        from PIL import ImageCms
+        from psdtags import (PsdChannel, PsdChannelId, PsdCompressionType, PsdFormat, PsdKey,
+                             PsdLayer, PsdLayers, PsdRectangle, PsdUserMask, TiffImageSourceData)
+        channels = [PsdChannel(PsdChannelId(i), PsdCompressionType.RLE, data[..., i].copy()) for i in range(3)]
+        layer = PsdLayer("SYNTHETIC original base", channels, PsdRectangle(0, 0, h, w))
+        source_data = TiffImageSourceData(PsdFormat.LE32BIT, PsdLayers(PsdKey.LAYER, [layer]), PsdUserMask())
+        tags.append(source_data.tifftag(compression=PsdCompressionType.RLE))
+        profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
     tifffile.imwrite(path, data, photometric="rgb", extrasamples=[0, 0, 0],
                      compression="lzw", metadata=None, description="SYNTHETIC fixture - not saved by Photoshop",
-                     extratags=[(34377, 7, len(resources), resources, False)])
+                     iccprofile=profile, extratags=tags)
 
 
 if __name__ == "__main__":

@@ -68,9 +68,10 @@ def main():
         "Python license: https://docs.python.org/3/license.html\n", encoding="utf-8")
     fixture = ROOT / "build/SYNTHETIC-package-check.tif"
     report = ROOT / "build/package-check.json"
-    make_demo(fixture)
+    make_demo(fixture, layers=True)
     if report.exists():
         report.unlink()
+    report.with_name(report.stem + "-edited.tif").unlink(missing_ok=True)
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
     # No source checkout or Python command is involved in the frozen smoke test.
     subprocess.run([str(bundle / "TIFview.exe"), "--smoke-test", str(fixture), str(report)],

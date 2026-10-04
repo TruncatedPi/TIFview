@@ -4,7 +4,7 @@ import sys
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Read-only TIFF channel inspector")
+    parser = argparse.ArgumentParser(description="TIFF channel viewer and pixel editor")
     parser.add_argument("image", nargs="?", help="Image path to open")
     parser.add_argument("--inspect", action="store_true", help="Print channel metadata as JSON, without opening the UI")
     args = parser.parse_args()

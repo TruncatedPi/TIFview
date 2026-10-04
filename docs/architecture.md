@@ -1,4 +1,4 @@
-# Read-only architecture
+# Channel viewer and pixel-editor architecture
 
 The prototype uses a local Python / PySide6 Essentials app (Python 3.12 minimum;
 Windows CI tests 3.12/3.13). The UI and
@@ -12,7 +12,9 @@ TIFF -> tifffile + imagecodecs -> immutable H × W × samples array
                        -> names, types, colour values, saved solidity
 
 ImageDocument -> display-only orientation / 8-bit preview -> Qt image view
-              -> read-only inventory + original pixel-value inspection
+              -> read-only inventory + current pixel-value inspection
+              -> copy on first edit -> selected-plane raster patches -> undo/redo
+                                    -> TIFF copy -> reopen/verify -> publish
 ```
 
 Additional common formats use Pillow. It preserves decoded RGB/CMYK/gray/alpha
@@ -93,3 +95,42 @@ source samples are 16-bit. No monitor profile or soft-proof simulation is used.
 Dependency versions are pinned to the tested Windows environment. These source
 references guide the implementation; they do not substitute for representative
 Photoshop-generated TIFF testing.
+
+## Pixel edits and TIFF copies
+
+Qt rasterizes ellipses, boxes, lines and text into an 8-bit antialiasing coverage
+mask in displayed source-pixel coordinates. `EditSession` blends this mask into
+the selected native 8/16-bit plane with 64-bit integer arithmetic. TIFF
+orientation is a view, so edits map back into the stored orientation without
+rotating or resampling the whole image. Uncovered samples stay exact. Original
+samples remain immutable; the first real edit creates a separate writable copy.
+
+Undo/redo records before/after pixel patches, bounded to 128 MiB. State IDs track
+the save checkpoint even when the user undoes, saves or creates a new branch.
+Associated-alpha edits rescale premultiplied process samples; process edits
+are bounded by alpha. These coupled changes are included in the same undo patch.
+
+The writer uses unsigned 8/16-bit native samples with LZW, horizontal prediction,
+interleaved storage, little-endian byte order and classic TIFF. It retains the
+source orientation, ICC, print resolution, transparency types, channel resource
+blocks, XMP/IPTC and attribution tags. Photoshop thumbnail caches (1033/1036)
+are dropped after pixel changes; other resource blocks are copied verbatim.
+Pyramid reductions average 2x2 native samples and are rebuilt with corresponding
+reduced DPI. Additional independent pages are rejected rather than discarded.
+
+Photoshop ImageSourceData is kept as an opaque byte block for spot/saved-mask
+edits to little-endian files. This retains unknown layer tags and existing RLE
+or ZIP data without decode/reserialize losses. Process or transparency changes
+would make the original layer composite stale, so the UI disables layer
+retention and explicitly offers a merged copy with every channel. Big-endian
+layer blocks currently require the same merged-copy option because the export
+preset uses IBM-PC byte order. Layer-aware editing/recomposition is future work.
+
+The original path and hardlink aliases cannot be export destinations. The source
+file's stat signature must still match the opened document. A temporary TIFF is
+written beside the chosen destination, reopened and checked for native pixels,
+bit depth, orientation, channel names/types/display info, resources, ICC, layers,
+resolution, encoding and pyramid pixels. Only a successful check publishes the
+copy. Editing is disabled during this background save; failures retain in-memory
+edits and leave an existing destination intact. These checks establish internal
+round-trip integrity, not independent Photoshop or RIP compatibility.

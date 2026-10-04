@@ -1,0 +1,160 @@
+"""Verified TIFF copies, retaining native samples and Photoshop channel tags."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from fractions import Fraction
+import os
+from pathlib import Path
+import tempfile
+
+import numpy as np
+import tifffile
+
+from . import __version__
+from .model import ImageDocument
+from .photoshop import without_thumbnails
+from .reader import file_signature, load_image
+
+
+@dataclass(frozen=True)
+class SaveOptions:
+    keep_layers: bool = True
+    pyramid: bool = True
+
+
+def layer_preservation_reason(original: ImageDocument, edited: ImageDocument) -> str | None:
+    if not original.metadata.get("has_photoshop_layers"):
+        return None
+    if original.metadata.get("byte_order") != "IBM PC (little endian)":
+        return "Preserving Macintosh-byte-order layer blocks in an IBM-PC TIFF is not implemented."
+    protected = list(range(original.base_count)) + [c.index for c in original.channels if c.kind == "Transparency"]
+    if any(not np.array_equal(original.samples[..., index], edited.samples[..., index]) for index in protected):
+        return "CMYK/RGB or transparency pixels changed. The original Photoshop layers still contain the old image."
+    return None
+
+
+def reduce_half(samples: np.ndarray) -> np.ndarray:
+    """Average each 2x2 native-sample block, including partial edge blocks."""
+    h, w, count = samples.shape
+    sums = np.zeros(((h + 1) // 2, (w + 1) // 2, count), dtype=np.uint32)
+    weights = np.zeros(sums.shape[:2], dtype=np.uint32)
+    for y in range(2):
+        for x in range(2):
+            block = samples[y::2, x::2]
+            sums[:block.shape[0], :block.shape[1]] += block
+            weights[:block.shape[0], :block.shape[1]] += 1
+    return ((sums + weights[..., None] // 2) // weights[..., None]).astype(samples.dtype)
+
+
+def save_tiff_copy(original: ImageDocument, edited: ImageDocument, filename: str | Path,
+                   options: SaveOptions = SaveOptions(), overwrite: bool = False) -> Path:
+    """Write and reopen a temporary copy before atomically publishing it."""
+    source = original.path.resolve()
+    destination = Path(filename).resolve()
+    if destination == source or (destination.exists() and os.path.samefile(source, destination)):
+        raise ValueError("Save an edited copy under a new name. The original image cannot be overwritten.")
+    if destination.suffix.lower() not in (".tif", ".tiff"):
+        raise ValueError("Choose a .tif or .tiff filename")
+    if destination.exists() and not overwrite:
+        raise FileExistsError(f"{destination.name} already exists")
+    if edited.samples.shape != original.samples.shape or edited.bits != original.bits:
+        raise ValueError("Image dimensions, channel count and bit depth must remain unchanged")
+    if edited.bits not in (8, 16) or edited.color_mode not in ("RGB", "CMYK", "Gray", "WhiteIsZero"):
+        raise ValueError("TIFF export supports unsigned 8/16-bit RGB, CMYK and grayscale images")
+    signature = original.metadata.get("source_signature")
+    if signature is not None and file_signature(source) != signature:
+        raise ValueError("The original file changed after opening. Reopen it before saving.")
+    reason = layer_preservation_reason(original, edited)
+    if options.keep_layers and reason:
+        raise ValueError(reason + " Save a merged copy with Photoshop layers unchecked.")
+    if original.metadata.get("page_count", 1) > 1:
+        raise ValueError("Saving TIFFs with additional independent image pages is not implemented")
+    extra_tags = [(274, 3, 1, edited.orientation, False)]
+    resources = edited.photoshop_resources
+    if resources and not np.array_equal(original.samples, edited.samples):
+        resources = without_thumbnails(resources) or None
+    layer_bytes = None
+    resolution = ((72, 1), (72, 1))
+    unit = 2
+    levels = 1
+    if original.metadata.get("backend") != "Pillow":
+        with tifffile.TiffFile(source, mode="r") as tif:
+            page = tif.pages[0]
+            resolution = (page.tags.valueof(282, (72, 1)), page.tags.valueof(283, (72, 1)))
+            unit = int(page.tags.valueof(296, 2))
+            levels = max(1, len(page.subifds or ()))
+            if options.keep_layers and 37724 in page.tags:
+                layer_bytes = bytes(page.tags[37724].value)
+                extra_tags.append((37724, 7, len(layer_bytes), layer_bytes, False))
+            # These contain payloads rather than offsets to other IFDs.
+            for code in (700, 33723, 315, 33432):
+                tag = page.tags.get(code)
+                if tag:
+                    extra_tags.append((code, int(tag.dtype), tag.count, tag.value, False))
+    if resources:
+        extra_tags.append((34377, 1, len(resources), resources, False))
+    if edited.color_mode == "CMYK":
+        extra_tags.append((332, 3, 1, 1, False))  # CMYK InkSet.
+    extras = edited.metadata.get("extra_samples")
+    if extras is None:
+        extras = [2 if c.kind == "Transparency" else 0 for c in edited.channels[edited.base_count:]]
+    reduced = []
+    if options.pyramid:
+        data = edited.samples
+        for _ in range(levels):
+            if data.shape[:2] == (1, 1):
+                break
+            data = reduce_half(data)
+            reduced.append(data)
+    photo = {"RGB": "rgb", "CMYK": "separated", "Gray": "minisblack", "WhiteIsZero": "miniswhite"}[edited.color_mode]
+    common = dict(photometric=photo, planarconfig="contig", extrasamples=extras,
+                  compression="lzw", predictor=True, metadata=None)
+    handle, temporary = tempfile.mkstemp(prefix=f".{destination.stem}-", suffix=".tif", dir=destination.parent)
+    os.close(handle)
+    temporary = Path(temporary)
+    try:
+        with tifffile.TiffWriter(temporary, byteorder="<", bigtiff=False) as tif:
+            tif.write(edited.samples, subifds=len(reduced) or None, extratags=extra_tags,
+                      iccprofile=edited.icc_profile, resolution=resolution, resolutionunit=unit,
+                      software=f"TIFview {__version__}", datetime=True, **common)
+            for index, data in enumerate(reduced, 1):
+                reduced_resolution = tuple((v[0], v[1] * 2**index) for v in resolution)
+                tif.write(data, subfiletype=1, resolution=reduced_resolution, resolutionunit=unit,
+                          extratags=[(274, 3, 1, edited.orientation, False)], **common)
+        reopened = load_image(temporary)
+        if (reopened.bits, reopened.color_mode, reopened.orientation, reopened.samples.dtype) != (
+                edited.bits, edited.color_mode, edited.orientation, edited.samples.dtype):
+            raise ValueError("Saved bit depth, colour mode or orientation changed")
+        if not np.array_equal(reopened.samples, edited.samples):
+            raise ValueError("Saved channel pixels did not pass read-back verification")
+        if [(c.name, c.kind, c.display) for c in reopened.channels] != [(c.name, c.kind, c.display) for c in edited.channels]:
+            raise ValueError("Saved channel names or types did not pass read-back verification")
+        if reopened.icc_profile != edited.icc_profile or reopened.photoshop_resources != resources:
+            raise ValueError("Saved Photoshop resources or ICC profile changed")
+        with tifffile.TiffFile(temporary) as tif:
+            page = tif.pages[0]
+            if (tif.is_bigtiff or tif.byteorder != "<" or int(page.compression) != 5 or
+                    int(page.planarconfig) != 1 or [int(e) for e in page.extrasamples] != list(extras)):
+                raise ValueError("Saved TIFF settings did not pass read-back verification")
+            if page.tags.valueof(37724) != layer_bytes:
+                raise ValueError("Saved Photoshop layer data changed")
+            saved_resolution = (page.tags.valueof(282), page.tags.valueof(283))
+            if (int(page.tags.valueof(296)) != unit or
+                    tuple(Fraction(*value) for value in saved_resolution) != tuple(Fraction(*value) for value in resolution)):
+                raise ValueError("Saved print resolution changed")
+            if len(page.subifds or ()) != len(reduced):
+                raise ValueError("Saved image pyramid is incomplete")
+            for child, expected in zip(page.pages or (), reduced):
+                if not np.array_equal(child.asarray(), expected):
+                    raise ValueError("Saved image pyramid did not pass read-back verification")
+        if signature is not None and file_signature(source) != signature:
+            raise ValueError("The original file changed while saving. Reopen it and retry.")
+        if overwrite:
+            os.replace(temporary, destination)
+        elif os.name == "nt":
+            os.rename(temporary, destination)  # Windows refuses to overwrite a racing destination.
+        else:
+            os.link(temporary, destination)
+        return destination
+    finally:
+        temporary.unlink(missing_ok=True)

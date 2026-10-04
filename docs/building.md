@@ -8,7 +8,9 @@ Only the release job has repository write permission. No secrets need to be set.
 The tests use generated fixtures, including Photoshop resource structures.
 They cover raw samples, 8/16-bit decoding, spot versus alpha/transparency,
 Qt channel pixels, visibility, wheel zoom, drag pan and keeping the viewport
-when selecting another channel. The optional private production-file test is
+when selecting another channel, raster shapes/text, undo/redo and safe TIFF-copy
+export with channel metadata, ICC, layers, transparency, DPI and pyramids.
+The optional private production-file tests are
 skipped in GitHub; set `TIFVIEW_SAMPLE` locally to run it.
 
 ## Build locally
@@ -35,7 +37,10 @@ dependencies.
 The build script starts **the actual frozen executable** outside the source
 folder and opens a known LZW TIFF with named White Ink, Varnish and alpha masks.
 It checks Qt pixels at known coordinates, image dimensions, 100%/zoom/fit,
-read-only samples and the source hash. A failure stops packaging.
+immutable original samples and the source hash. It also paints ellipses, boxes,
+lines and text into a spot, checks exact undo/redo and displayed pixels, and
+saves/reopens a TIFF copy preserving its RLE layers and ICC profile with a
+rebuilt pyramid. A failure stops packaging.
 The fixture and report stay in `build/`, not in the shipped app.
 
 Outputs: `dist/TIFview-<version>-windows-x64.zip`, a `.zip.sha256` file,

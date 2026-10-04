@@ -33,7 +33,7 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
       - name: Check dependencies
         run: python -m pip check
-      - name: Test channels, pixels and navigation
+      - name: Test channels, pixel edits, TIFF saves and navigation
         run: python -m pytest -q --junitxml=build/test-results.xml
       - name: Save test results
         if: always()
@@ -58,7 +58,7 @@ jobs:
           cache-dependency-path: requirements*.txt
       - name: Install build dependencies
         run: python -m pip install -r requirements-build.txt
-      - name: Build executable, check channel pixels, create ZIP
+      - name: Build executable, check pixels and edits, verify TIFF save, create ZIP
         run: python -m tools.build_windows
       - uses: actions/upload-artifact@v6
         with:

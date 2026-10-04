@@ -9,7 +9,8 @@ from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from tifview.app import ImageView, ViewerWindow
+from tifview.app import ImageView, TiffSaveDialog, ViewerWindow, configure_application
+from tifview.reader import load_image
 from tools.make_demo import make_demo
 
 
@@ -87,7 +88,6 @@ def test_mouse_wheel_zoom_and_drag_pan():
         # Scrollbar positioning rounds to whole logical pixels.
         assert abs(after.x() - before.x()) < 2
         assert abs(after.y() - before.y()) < 2
-
         start, end = QPoint(300, 230), QPoint(380, 290)
         before = view.mapToScene(start)
         scroll_before = (view.horizontalScrollBar().value(), view.verticalScrollBar().value())
@@ -99,6 +99,97 @@ def test_mouse_wheel_zoom_and_drag_pan():
         after = view.mapToScene(end)
         assert abs(after.x() - before.x()) < 2
         assert abs(after.y() - before.y()) < 2
+        view.set_tool("Line")
+        before = view.mapToScene(start)
+        QTest.mousePress(view.viewport(), Qt.MouseButton.MiddleButton, pos=start)
+        QTest.mouseMove(view.viewport(), end, 20)
+        QTest.mouseRelease(view.viewport(), Qt.MouseButton.MiddleButton, pos=end)
+        app.processEvents()
+        after = view.mapToScene(end)
+        assert abs(after.x() - before.x()) < 2
+        assert abs(after.y() - before.y()) < 2
+        assert view._drawing_start is None and view._pan_position is None
     finally:
         view.close()
+        app.processEvents()
+
+
+def test_mouse_shape_paints_selected_spot_undo_redo_and_async_tiff_copy(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    configure_application(app)
+    path = tmp_path / "layered-demo.tif"
+    make_demo(path, layers=True)
+    window = ViewerWindow()
+    window.show()
+    errors = []
+    window.save_failed = errors.append
+    try:
+        window.open_path(str(path))
+        deadline = time.monotonic() + 15
+        while window.loader is not None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(.01)
+        assert window.doc is not None and window.loader is None
+        window.channels.setCurrentItem(window.channels.topLevelItem(4))
+        window.actual()
+        window.tool_combo.setCurrentText("Box")
+        window.fill.setChecked(True)
+        app.processEvents()
+        start = window.view.mapFromScene(330, 50)
+        end = window.view.mapFromScene(410, 120)
+        QTest.mousePress(window.view.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(window.view.viewport(), end, 20)
+        QTest.mouseRelease(window.view.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        app.processEvents()
+        assert window.edits.dirty
+        assert window.doc.samples[85, 370, 3] == 0
+        assert window.edits.original.samples[85, 370, 3] == 255
+        assert window.view.image_item.pixmap().toImage().pixelColor(370, 85).red() == 0
+        assert window.undo_action.isEnabled()
+        painted = window.doc.samples.copy()
+        window.style_combo.setCurrentIndex(1)
+        assert window.tool_combo.currentText() == "Pan"
+        np.testing.assert_array_equal(window.doc.samples, painted)
+        window.tool_combo.setCurrentText("Box")
+        assert window.style_combo.currentIndex() == 0
+        QTest.keyClick(window.view.viewport(), Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        app.processEvents()
+        assert window.doc.samples[85, 370, 3] == 255
+        assert not window.edits.dirty
+        QTest.keyClick(window.view.viewport(), Qt.Key.Key_Y, Qt.KeyboardModifier.ControlModifier)
+        app.processEvents()
+        assert window.doc.samples[85, 370, 3] == 0
+        settings = TiffSaveDialog(window.edits.original, window.doc, window)
+        assert settings.layers.isChecked() and settings.layers.isEnabled()
+        target = tmp_path / "edited-copy.tif"
+        window.save_copy(str(target), settings.options())
+        assert not window.edit_toolbar.isEnabled()
+        deadline = time.monotonic() + 15
+        while window.saver is not None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(.01)
+        assert window.saver is None
+        assert not errors
+        assert not window.edits.dirty
+        saved = load_image(target)
+        assert saved.samples[85, 370, 3] == 0
+        assert saved.metadata["has_photoshop_layers"]
+        assert saved.metadata["pyramid_subifds"] == 1
+        np.testing.assert_array_equal(saved.samples[..., :3], window.edits.original.samples[..., :3])
+        assert load_image(path).samples[85, 370, 3] == 255
+        window.channels.setCurrentItem(window.channels.topLevelItem(1))
+        window.apply_drawing("Box", (330., 50.), (410., 120.))
+        merged = TiffSaveDialog(window.edits.original, window.doc, window)
+        assert not merged.layers.isEnabled() and not merged.options().keep_layers
+        window.undo()
+        assert not window.edits.dirty
+        window.channels.setCurrentItem(window.channels.topLevelItem(0))
+        assert window.view.tool == "Pan" and not window.edit_toolbar.isEnabled()
+    finally:
+        if window.saver is not None:
+            window.saver.wait(15000)
+            app.processEvents()
+        if window.edits:
+            window.edits.mark_saved()
+        window.close()
         app.processEvents()

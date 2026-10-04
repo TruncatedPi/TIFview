@@ -4,16 +4,22 @@ import json
 from pathlib import Path
 import time
 
+import numpy as np
+import tifffile
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
 from tifview.app import ViewerWindow, configure_application
+from tifview.reader import load_image
+from tifview.writer import save_tiff_copy
 
 
 def run(image_path: str, report_path: str) -> int:
     source = Path(image_path).resolve()
     report = Path(report_path).resolve()
-    if report == source or report.exists():
+    edited_path = report.with_name(report.stem + "-edited.tif")
+    if report == source or report.exists() or edited_path == source or edited_path.exists():
         return 2  # Never overwrite an existing file for a build check.
     before = hashlib.sha256(source.read_bytes()).hexdigest()
     app = QApplication.instance() or QApplication([])
@@ -61,14 +67,52 @@ def run(image_path: str, report_path: str) -> int:
             window.fit()
             assert window.view.fitted
             assert not doc.samples.flags.writeable
+            assert doc.metadata["has_photoshop_layers"] and doc.icc_profile
+            window.channels.setCurrentItem(window.channels.topLevelItem(4))
+            for tool, start, end in [
+                ("Ellipse", (350., 40.), (440., 120.)),
+                ("Box", (350., 150.), (440., 230.)),
+                ("Line", (350., 260.), (440., 300.)),
+                ("Text", (350., 330.), (350., 330.)),
+            ]:
+                before_stroke = window.doc.samples.copy()
+                window.tool_combo.setCurrentText(tool)
+                window.apply_drawing(tool, start, end, text="UV" if tool == "Text" else None)
+                painted = window.doc.samples.copy()
+                assert not np.array_equal(painted[..., 3], before_stroke[..., 3]), tool
+                window.undo()
+                np.testing.assert_array_equal(window.doc.samples, before_stroke)
+                window.redo()
+                np.testing.assert_array_equal(window.doc.samples, painted)
+            pixels = window.view.image_item.pixmap().toImage().convertToFormat(QImage.Format.Format_RGB888)
+            rows = np.frombuffer(pixels.constBits(), np.uint8).reshape(pixels.height(), pixels.bytesPerLine())
+            displayed = rows[:, :pixels.width() * 3].reshape(pixels.height(), pixels.width(), 3)
+            np.testing.assert_array_equal(displayed[..., 0], window.doc.samples[..., 3])
+            np.testing.assert_array_equal(window.doc.samples[..., [0, 1, 2, 4, 5]], doc.samples[..., [0, 1, 2, 4, 5]])
+            assert window.edits.dirty
+            save_tiff_copy(doc, window.doc, edited_path)
+            reopened = load_image(edited_path)
+            np.testing.assert_array_equal(reopened.samples, window.doc.samples)
+            assert reopened.icc_profile == doc.icc_profile
+            assert reopened.photoshop_resources == doc.photoshop_resources
+            with tifffile.TiffFile(source) as original, tifffile.TiffFile(edited_path) as saved:
+                assert saved.pages[0].tags[37724].value == original.pages[0].tags[37724].value
+                assert len(saved.pages[0].subifds) == 1
+                assert saved.byteorder == "<" and not saved.is_bigtiff
+                assert int(saved.pages[0].compression) == 5
+                assert int(saved.pages[0].planarconfig) == 1
             assert hashlib.sha256(source.read_bytes()).hexdigest() == before
             result.update(passed=True, channels=doc.report()["channels"],
                           checks=["LZW decoding", "Photoshop names and types", "Qt channel pixels",
-                                  "actual pixels, zoom and fit", "read-only source"])
+                                  "actual pixels, zoom and fit", "ellipse, box, line and text pixels",
+                                  "exact undo and redo", "TIFF save and reopen", "opaque RLE layers and ICC",
+                                  "rebuilt image pyramid", "untouched source"])
         except Exception as exc:
             result.update(passed=False, error=f"{type(exc).__name__}: {exc}")
         report.parent.mkdir(parents=True, exist_ok=True)
         report.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        if window.edits:
+            window.edits.mark_saved()  # An unattended check must not ask to discard.
         window.close()
         app.exit(0 if result["passed"] else 1)
 

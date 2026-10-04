@@ -1,1 +1,1 @@
-"""Development utilities, separate from the read-only viewer."""
+"""Development and packaging utilities, separate from the desktop app."""

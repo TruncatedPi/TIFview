@@ -29,13 +29,24 @@ class UnsupportedImageError(ValueError):
 
 def load_image(filename: str | Path) -> ImageDocument:
     path = Path(filename).resolve()
+    before = file_signature(path)
     with path.open("rb") as source:
         magic = source.read(4)
     if magic in (b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"):
-        return _load_tiff(path)
-    if path.suffix.lower() in (".tif", ".tiff"):
+        doc = _load_tiff(path)
+    elif path.suffix.lower() in (".tif", ".tiff"):
         raise UnsupportedImageError("The file does not have a valid TIFF header.")
-    return _load_common(path)
+    else:
+        doc = _load_common(path)
+    if file_signature(path) != before:
+        raise UnsupportedImageError("The source changed during import. Reopen the file.")
+    doc.metadata["source_signature"] = before
+    return doc
+
+
+def file_signature(path: Path):
+    stat = path.stat()
+    return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns]
 
 
 def _channels(mode: str, count: int, extra_types: list[int], resources: bytes | None,

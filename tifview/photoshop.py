@@ -95,6 +95,23 @@ def _validate_blocks(data: bytes) -> list[int]:
     return ids
 
 
+def without_thumbnails(data: bytes) -> bytes:
+    """Drop stale Photoshop preview caches, copying every other block verbatim."""
+    _validate_blocks(data)
+    retained = []
+    pos = 0
+    while pos < len(data):
+        start = pos
+        resource_id = struct.unpack_from(">H", data, pos + 4)[0]
+        name_size = data[pos + 6] + 1
+        pos += 6 + name_size + name_size % 2
+        size = struct.unpack_from(">I", data, pos)[0]
+        pos += 4 + size + size % 2
+        if resource_id not in (1033, 1036):
+            retained.append(data[start:pos])
+    return b"".join(retained)
+
+
 def _displays(data: bytes, resource_id: int) -> list[DisplayInfo]:
     if resource_id == 1077:
         if len(data) < 4 or struct.unpack_from(">I", data)[0] != 1:
