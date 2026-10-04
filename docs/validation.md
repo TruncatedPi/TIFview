@@ -47,6 +47,13 @@ These are reference artifacts, not production printing files. Recorded decode
 time was approximately 0.08 seconds on this machine, excluding Python startup
 and GUI startup; this is not a large-file benchmark.
 
+The native Windows Qt platform was also checked with the supplied file: the
+window was visible and exposed, selecting **w-back** displayed a 1228 × 781
+pixel image, and the **100%** action showed actual pixels. Gesture checks confirmed
+left-button drag panning and mouse-wheel zoom around the pointer. This verifies
+the image viewport and navigation rather than only the channel inventory.
+The local native screenshot is `validation/local/bailey/viewer-w-back-windows.png`.
+
 ## Automated fixtures
 
 The suite checks byte-exact sample retention through 8/16-bit TIFF decode with
