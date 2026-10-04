@@ -1,0 +1,6 @@
+numpy==2.5.3
+tifffile==2026.9.20
+imagecodecs==2026.8.16
+psdtags==2026.1.29
+PySide6-Essentials==6.11.2
+Pillow==12.3.0
