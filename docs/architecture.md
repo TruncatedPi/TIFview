@@ -1,6 +1,7 @@
 # Read-only architecture
 
-The prototype uses a local Python 3.12 / PySide6 Essentials app. The UI and
+The prototype uses a local Python / PySide6 Essentials app (Python 3.12 minimum;
+Windows CI tests 3.12/3.13). The UI and
 metadata interpreter are separate from the document and rendering modules:
 
 ```text

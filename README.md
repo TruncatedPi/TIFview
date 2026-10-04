@@ -1,5 +1,7 @@
 # TIFview
 
+[![Windows checks](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml/badge.svg)](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml)
+
 A local Windows desktop prototype for inspecting printing images and their
 channels. The viewer opens source files read-only. Photoshop remains the tool
 for editing production files.
@@ -29,23 +31,50 @@ image area. Click **100%** to view actual pixels, use the mouse wheel to zoom,
 and drag the image to pan. Click **w-front**, **v-front** or **v-all** to inspect
 the other spots; click **Composite** to return to the colour image.
 
-This is a source prototype, not a packaged executable or installer.
-
 ## Set up on another Windows computer
 
-Install **64-bit CPython 3.12** from [Python for Windows](https://www.python.org/downloads/windows/),
-including the Python launcher. Then, from the project folder:
+**Windows 10/11, 64-bit (x64). Python is included in the portable download.**
+
+1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
+2. Download **TIFview-0.1.0-windows-x64.zip** and extract the entire ZIP.
+3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
+
+Keep the `_internal` folder with the executable. No Python installation, Git,
+administrator access or account is needed. The viewer runs offline after download.
+To update, extract the next release into a new folder; to remove it, delete the
+application folder. Source images remain untouched.
+
+For **automatic setup and a desktop shortcut**, download the
+[source ZIP](https://github.com/TruncatedPi/TIFview/archive/refs/heads/main.zip),
+extract it, and double-click **setup.cmd**. It downloads the latest Windows
+release, verifies its SHA-256 checksum, extracts it to
+`%LOCALAPPDATA%\TIFview\<version>`, creates a TIFview desktop shortcut, and
+launches the app. Run it again to install a newer release. It does not install
+Python or change your system-wide PowerShell execution policy.
+
+### Python version and source setup
+
+**Python 3.12 is the minimum for the pinned dependencies**, specifically NumPy,
+tifffile and imagecodecs. It also happens to be the version used for the initial
+local prototype (3.12.14). It means **3.12**, not Python 12.
+Windows CI checks **3.12 and 3.13**, and the portable release bundles **3.13**.
+Other Python versions are not part of the current test matrix.
+
+There is no need to upgrade your working Python 3.12 environment to use this
+viewer. For a fresh source/development setup, use **64-bit Python 3.13** from
+[Python for Windows](https://www.python.org/downloads/windows/), including the
+Python launcher. Download/extract the source ZIP or clone the repository, then
+run these commands in its folder:
 
 ```powershell
-py -3.12 -m venv .venv
+py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m tifview
+.\launch.cmd
 ```
 
-No virtual-environment activation or PowerShell execution-policy change is
-needed. Installation downloads the libraries once; the viewer runs locally
-without network access, accounts, or cloud services. For errors hidden by the
-double-click launcher, use the Python command above to see the console output.
+Use `py -3.12` instead if keeping an existing Python 3.12 installation.
+No virtual-environment activation is needed. For console diagnostics, run
+`.\.venv\Scripts\python.exe -m tifview` instead of the double-click launcher.
 
 ## Using the viewer
 
@@ -136,8 +165,8 @@ The main tradeoff is Python/Qt installation size and full-image RAM use versus
 fast development and a channel reader that can be tested independently.
 See [architecture and resource rules](docs/architecture.md).
 
-1. **Current:** read-only channel inspection; validate more Photoshop files and
-   full-size masks, then improve large-file startup/RAM and package a Windows build.
+1. **Current:** read-only channel inspection and portable Windows packaging;
+   validate more Photoshop files and full-size masks, then improve large-file startup/RAM.
 2. **On hold until channel viewing is accepted:** text, ellipses/circles, lines, arrows and rectangles, display colour
    and thickness controls, undo/redo. Store coordinates in source-image space.
 3. **Planned:** a versioned `.tifview.json` sidecar with source path, dimensions,
@@ -158,6 +187,21 @@ Run the automated fixtures:
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest -q
 ```
+
+[GitHub Actions](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml)
+runs these checks on pull requests, pushes to `main`, version tags and manual
+runs. The Windows 3.12/3.13 jobs check dependency consistency, original sample
+preservation, channel names/types, TIFF storage options, actual displayed
+channel pixels, overlays, wheel zoom, drag panning and view preservation when
+switching channels. Synthetic fixtures run in CI; your production TIFF is not
+uploaded. Test reports are saved as workflow artifacts.
+
+After both test jobs pass, a clean Windows job builds a self-contained executable,
+opens a synthetic LZW TIFF in that executable, checks spot/alpha names and
+displayed channel pixels, and creates the portable ZIP plus SHA-256 file.
+Version tags publish the checked ZIP to GitHub Releases. See
+[build and release instructions](docs/building.md). These checks do not establish
+pixel-exact equivalence with Photoshop.
 
 Include the exact supplied file in the regression checks:
 
