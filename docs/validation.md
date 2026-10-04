@@ -160,6 +160,34 @@ by the user; that confirmation does not cover newly created/reordered spots.
 Open these copies in Photoshop, compare mask/name/sequence/solidity and layers,
 then check PrintExp's channel mapping using the same RIP job settings.
 
+## TIFF save and incomplete-file fixes (v0.3.1)
+
+A newly supplied Photoshop RGB TIFF reproduced the save failure after adding
+a spot. Its full-resolution image has 1318 × 2063 pixels and five samples,
+two named spots, 600 dpi and one reduced SubIFD. A second top-level directory
+contains only the Content Credentials tag 52545, type 7, with no image pixels.
+This metadata directory was incorrectly counted as another independent image.
+
+After the fix, a new spot saved and reopened in about 0.42 seconds. Read-back
+verified all five existing native planes, the new empty mask, channel names/types,
+600 dpi and a rebuilt pyramid. A Qt check also created and painted a new spot,
+verified its displayed pixels, saved asynchronously and checked every output
+sample. The source hash stayed unchanged. Private TIFFs, reports and the save
+dialog screenshot remain in ignored `validation/local/bugfixes/`.
+
+This particular source's layer blending ranges reference additional channels,
+so the existing safety check requires an explicit merged save without layers
+after adding a spot. Content Credentials are omitted from rewritten copies and
+the dialog explains why. Their signatures are not parsed or independently
+validated. Unknown directories and genuinely additional images still block saving.
+
+The local suite passes 227 tests, including empty TIFF errors, failed demo-write
+cleanup, credential-only directories and independent-image protection. The
+frozen Windows executable passes the existing GUI/edit/save smoke check plus
+the same workflow on a generated fixture with a final credential-only directory.
+The local header-only demo was recreated and its native channel pixels verified.
+Photoshop/PrintExp validation of the new saved sample remains pending.
+
 ## Large-image performance update
 
 A user-supplied 112.8 MiB TIFF with 3189 × 4606 pixels (84 MiB native samples,

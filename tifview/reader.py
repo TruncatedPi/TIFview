@@ -10,6 +10,7 @@ from PIL import Image, ImageOps
 
 from .model import Channel, ImageDocument
 from .photoshop import align_metadata, read_resources
+from .tiffpages import inspect_page_layout
 
 
 PROCESS = {
@@ -88,7 +89,11 @@ def _channels(mode: str, count: int, extra_types: list[int], resources: bytes | 
 def _load_tiff(path: Path) -> ImageDocument:
     warnings = []
     with tifffile.TiffFile(path, mode="r") as tif:
+        if not tif.pages:
+            raise UnsupportedImageError("This TIFF contains no image data. It may be empty or incomplete; "
+                                        "open a valid TIFF or recreate the test file.")
         page = tif.pages[0]
+        layout = inspect_page_layout(tif)
         mode = {0: "WhiteIsZero", 1: "Gray", 2: "RGB", 3: "Palette", 5: "CMYK"}.get(int(page.photometric))
         if mode is None:
             raise UnsupportedImageError(f"TIFF photometric {page.photometric.name} is not yet supported. "
@@ -130,8 +135,13 @@ def _load_tiff(path: Path) -> ImageDocument:
         if orientation not in range(1, 9):
             warnings.append(f"Unknown TIFF orientation {orientation}; showing stored orientation.")
             orientation = 1
-        if len(tif.pages) > 1:
-            warnings.append(f"This TIFF has {len(tif.pages)} pages; only the first IFD is shown.")
+        if layout.independent_pages:
+            warnings.append(f"This TIFF has {layout.independent_pages} additional image or unsupported "
+                            "directories; only the primary image is shown. Saving a copy is not supported.")
+        has_credentials = 52545 in page.tags or layout.manifest_only_pages > 0
+        if has_credentials:
+            warnings.append("Content Credentials metadata is present. It is not an image channel or page. "
+                            "Saved copies omit it because this app cannot update its signature for edited pixels.")
         if 37724 in page.tags:
             warnings.append("Photoshop layer data is present. This prototype inspects primary IFD "
                             "channels and the saved composite; layer-internal masks are not listed.")
@@ -141,6 +151,9 @@ def _load_tiff(path: Path) -> ImageDocument:
                     "byte_order": "IBM PC (little endian)" if tif.byteorder == "<" else "Macintosh (big endian)",
                     "pyramid_subifds": len(page.subifds or ()),
                     "extra_samples": extras, "page_count": len(tif.pages),
+                    "independent_page_count": layout.independent_pages,
+                    "content_credentials_ifds": layout.manifest_only_pages,
+                    "has_content_credentials": has_credentials,
                     "has_photoshop_layers": 37724 in page.tags,
                     "icc_bytes": len(icc) if icc else 0,
                     "photoshop_resource_ids": read_resources(resources).resource_ids if resources else []}

@@ -7,11 +7,26 @@ import numpy as np
 from PySide6.QtCore import Qt, QPoint, QPointF
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from tifview.app import ImageView, TiffSaveDialog, ViewerWindow, configure_application
 from tifview.reader import load_image
 from tools.make_demo import make_demo
+
+
+def test_tiff_save_explains_content_credentials_omission(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    path = tmp_path / "demo.tif"
+    make_demo(path)
+    doc = load_image(path)
+    doc.metadata["has_content_credentials"] = True
+    dialog = TiffSaveDialog(doc, doc)
+    try:
+        assert any("Content Credentials are omitted" in label.text()
+                   for label in dialog.findChildren(QLabel))
+    finally:
+        dialog.close()
+        app.processEvents()
 
 
 def test_async_open_selection_visibility_and_zoom(tmp_path):

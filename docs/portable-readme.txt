@@ -22,6 +22,8 @@ Shade 0 paints black (normally ink on spots), 255 paints white for 8-bit images;
 Save uses LZW, interleaved samples, IBM-PC byte order, transparency and a pyramid.
 Spot/saved-mask edits can retain original Photoshop layers. Process/transparency
 edits require a merged copy without layers; review the save dialog.
+Content Credentials metadata does not block TIFF saving. Credentials are omitted
+from saved copies because this app cannot update their signature after editing.
 
 Use the Spots menu or right-click a channel to create, duplicate, rename/change
 properties, move up/down or delete spots. A new mask is empty (white/no ink).

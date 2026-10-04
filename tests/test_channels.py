@@ -198,6 +198,17 @@ def test_tiff_pyramid_is_not_misidentified_as_channels(tmp_path):
     assert doc.metadata["pyramid_subifds"] == 1
 
 
+@pytest.mark.parametrize("header", [
+    b"II*\0\0\0\0\0", b"MM\0*\0\0\0\0",
+    b"II+\0\x08\0\0\0" + b"\0" * 8,
+])
+def test_header_only_tiff_has_actionable_error_instead_of_index_error(tmp_path, header):
+    path = tmp_path / "incomplete.tif"
+    path.write_bytes(header)
+    with pytest.raises(UnsupportedImageError, match="contains no image data"):
+        load_image(path)
+
+
 def test_float_and_unimplemented_photometric_are_rejected(tmp_path):
     with pytest.raises(UnsupportedImageError):
         load_image(write_tiff(tmp_path, np.zeros((4, 5), np.float32), "minisblack"))

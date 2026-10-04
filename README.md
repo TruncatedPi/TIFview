@@ -35,7 +35,7 @@ the other spots; click **Composite** to return to the colour image.
 **Windows 10/11, 64-bit (x64). Python is included in the portable download.**
 
 1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
-2. Download **TIFview-0.3.0-windows-x64.zip** and extract the entire ZIP.
+2. Download **TIFview-0.3.1-windows-x64.zip** and extract the entire ZIP.
 3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
 
 Keep the `_internal` folder with the executable. No Python installation, Git,
@@ -226,6 +226,9 @@ selection, visibility and zoom controls are tested.
 - Saving supports unsigned 8/16-bit RGB, CMYK and grayscale images. Palette and
   1-bit TIFFs remain viewable but cannot be edited/saved. TIFFs with additional
   independent image pages cannot be saved, to avoid discarding unseen pages.
+- Content Credentials metadata directories are distinguished from image pages.
+  Saved copies omit Content Credentials because TIFview cannot update their
+  signatures for edited pixels; the save dialog explains this.
 - Native samples remain 8/16-bit. The screen preview is 8-bit, with a fixed
   full-range mapping and no automatic contrast stretching.
 - ICC conversion targets sRGB, with Pillow/LittleCMS's default perceptual

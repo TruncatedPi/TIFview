@@ -119,6 +119,16 @@ pixel-only edits. Spot layout/properties changes rewrite the linked records belo
 Pyramid reductions average 2x2 native samples and are rebuilt with corresponding
 reduced DPI. Additional independent pages are rejected rather than discarded.
 
+TIFF Content Credentials can occupy a final metadata-only IFD containing just
+tag 52545 (type 7), as described by the
+[C2PA TIFF specification](https://spec.c2pa.org/specifications/specifications/2.2/specs/C2PA_Specification.html#_embedding_manifests_into_tiff_based_assets).
+`tiffpages.py` distinguishes this known metadata directory from an additional
+image. It also checks primary SubIFDs before rebuilding their reduced images;
+unknown image directories still block export. Content Credentials are omitted
+from rewritten copies because TIFview cannot update their signatures. The save
+dialog explains this, and the original TIFF remains untouched. Empty TIFFs with
+no image directories fail with an actionable error instead of an IndexError.
+
 Photoshop ImageSourceData is kept as an opaque byte block for spot/saved-mask
 edits to little-endian files. This retains unknown layer tags and existing RLE
 or ZIP data without decode/reserialize losses. Process or transparency changes

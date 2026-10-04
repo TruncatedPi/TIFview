@@ -316,6 +316,8 @@ class TiffSaveDialog(QDialog):
             explanation = "These spot-channel changes and saved-mask edits can retain the original layer block, including its existing RLE/ZIP compression."
         else:
             explanation = "The source has no Photoshop layers. All image and extra channel pixels are saved."
+        if original.metadata.get("has_content_credentials"):
+            explanation += "\nContent Credentials are omitted from the saved copy because this app cannot update their signature for the edited image."
         explanation += "\nThe source image stays untouched. Check the first edited copy in Photoshop and your RIP."
         notice = QLabel(explanation)
         notice.setWordWrap(True)

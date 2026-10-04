@@ -1,25 +1,22 @@
-Create, delete, reorder and duplicate Photoshop spot channels.
+Fix saving Photoshop TIFFs that contain Content Credentials metadata.
 
 Download the **TIFview Windows x64 ZIP**, extract the entire archive, and run
 **TIFview/TIFview.exe**. Python is included. Keep the `_internal` folder alongside
-the executable. `setup.cmd` in the source ZIP automates download and setup.
+the executable. Rerun `setup.cmd` in the source ZIP for automatic updating.
 
-- Use the **Spots** menu or right-click a channel row. New spots start empty
-  (white/no ink); duplication copies every native mask pixel.
-- Move spots up/down to change the saved relative ink sequence. Numbered labels,
-  names, pixels and Photoshop channel records stay together. Process,
-  transparency and saved alpha channels are protected.
-- Spot properties edit the name, saved preview colour and solidity. These are
-  separate from temporary overlay controls and do not set printer ink density.
-- Undo/redo covers channel operations and painting together, with bounded history.
-- TIFF copies retain native 8/16-bit data, channel IDs/types/colours, ICC, DPI,
-  transparency and a rebuilt pyramid using the existing LZW/interleaved/IBM-PC preset.
-- Layer retention checks reject additional-channel dependencies rather than
-  copying inconsistent layer data. Supported layer bytes remain untouched.
-- Quick Mask, unknown channel mapping and unsupported/custom halftones block
-  structural changes with an explanation.
+- A metadata-only Content Credentials directory no longer causes the false
+  "additional independent image pages" error when saving edited spot channels.
+- Saved copies omit Content Credentials; TIFview cannot update their signature
+  for the edited image. The save dialog explains this. Source files stay untouched.
+- TIFFs with genuinely additional images still block export to protect unseen data.
+- Empty or incomplete TIFFs now produce a clear "no image data" message.
+- Demo generation publishes only a finished TIFF, so failed writes cannot leave
+  a header-only demo or damage an existing fixture.
 
-Automated and sample TIFF read-back tests verify the new channel layout and
-preserved pixels/metadata. **Creation/deletion/reordering still need a new user
-round-trip check in Photoshop and PrintExp.** The previously confirmed pixel-edit
-workflow remains available, along with fast channel previews, pan and zoom.
+Spot creation/deletion/reordering, channel painting, undo/redo, pan and zoom remain
+available. The printing preset retains native 8/16-bit channels, LZW compression,
+interleaved samples, IBM-PC byte order, DPI, transparency and a rebuilt pyramid.
+Supported original Photoshop layer blocks remain intact.
+
+Automated tests and local sample read-back checks verify these fixes. New channel
+layouts still need a user check in Photoshop and PrintExp before production use.

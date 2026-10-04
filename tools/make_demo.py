@@ -1,6 +1,8 @@
 """Create a clearly synthetic fixture. Never represents Photoshop validation."""
 import argparse
+import os
 import struct
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -51,9 +53,19 @@ def make_demo(path: Path, layers: bool = False):
         source_data = TiffImageSourceData(PsdFormat.LE32BIT, PsdLayers(PsdKey.LAYER, [layer]), PsdUserMask())
         tags.append(source_data.tifftag(compression=PsdCompressionType.RLE))
         profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
-    tifffile.imwrite(path, data, photometric="rgb", extrasamples=[0, 0, 0],
-                     compression="lzw", metadata=None, description="SYNTHETIC fixture - not saved by Photoshop",
-                     iccprofile=profile, extratags=tags)
+    # A codec or write failure may occur after tifffile creates its header.
+    # Publish only a finished file, including when build tools intentionally
+    # replace an existing fixture. A sibling keeps os.replace on one volume.
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp.tif", dir=path.parent)
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        tifffile.imwrite(temporary, data, photometric="rgb", extrasamples=[0, 0, 0],
+                         compression="lzw", metadata=None, description="SYNTHETIC fixture - not saved by Photoshop",
+                         iccprofile=profile, extratags=tags)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

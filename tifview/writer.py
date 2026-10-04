@@ -14,6 +14,7 @@ from . import __version__
 from .model import ImageDocument
 from .photoshop import without_thumbnails
 from .reader import file_signature, load_image
+from .tiffpages import inspect_page_layout
 
 
 @dataclass(frozen=True)
@@ -125,8 +126,6 @@ def save_tiff_copy(original: ImageDocument, edited: ImageDocument, filename: str
     reason = layer_preservation_reason(original, edited)
     if options.keep_layers and reason:
         raise ValueError(reason + " Save a merged copy with Photoshop layers unchecked.")
-    if original.metadata.get("page_count", 1) > 1:
-        raise ValueError("Saving TIFFs with additional independent image pages is not implemented")
     extra_tags = [(274, 3, 1, edited.orientation, False)]
     resources = edited.photoshop_resources
     if resources and not np.array_equal(original.samples, edited.samples):
@@ -138,9 +137,12 @@ def save_tiff_copy(original: ImageDocument, edited: ImageDocument, filename: str
     if original.metadata.get("backend") != "Pillow":
         with tifffile.TiffFile(source, mode="r") as tif:
             page = tif.pages[0]
+            layout = inspect_page_layout(tif)
+            if layout.independent_pages:
+                raise ValueError("Saving TIFFs with additional independent image pages is not implemented")
             resolution = (page.tags.valueof(282, (72, 1)), page.tags.valueof(283, (72, 1)))
             unit = int(page.tags.valueof(296, 2))
-            levels = max(1, len(page.subifds or ()))
+            levels = max(1, layout.pyramid_levels)
             if options.keep_layers and 37724 in page.tags:
                 layer_bytes = bytes(page.tags[37724].value)
                 extra_tags.append((37724, 7, len(layer_bytes), layer_bytes, False))
