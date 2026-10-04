@@ -117,7 +117,10 @@ with actual mouse events, uses keyboard undo/redo and saves via the worker.
 The packaged executable paints all four tools and saves/reopens a layered
 RGB+spot fixture without a Python installation.
 
-**Photoshop reopening and target-RIP compatibility remain unverified.** Open
+The user subsequently confirmed the edited TIFFs work in **Photoshop and
+PrintExp (Hosonsoft) for a Refinecolor 6090**, and that the portable app installed
+and worked on another computer. Independent pixel measurements, exact application
+versions and testing of other TIFF variants are still not recorded. For more files, open
 the edited validation copy in Photoshop, compare w-back at 100%, inspect the
 other channels and original layers, and check channel options/solidity and
 360 dpi. Then import that same copy into the target RIP and verify spot mapping,
@@ -127,7 +130,39 @@ unknown. The [manufacturer's 6090 specification](https://www.refinecolor.com/ref
 lists PrintExp and CMYK+W+V, but does not document the TIFF/channel export details
 needed to prove this copy's compatibility. Keep the existing spot names and
 compare original/edited files using the same PrintExp job settings.
-The internal read-back checks alone do not establish production compatibility.
+The internal read-back checks alone do not establish compatibility with every RIP/configuration.
+
+## Large-image performance update
+
+A user-supplied 112.8 MiB TIFF with 3189 × 4606 pixels (84 MiB native samples,
+CMYK, associated transparency and one spot) reproduced the reported latency.
+On this PC, decoding/ICC setup took about 0.23 seconds, while the previous
+renderer took 1.03 seconds for a spot and 5.90 seconds for the composite.
+Composite rendering temporarily allocated about 1121 MiB and process RAM
+reached about 1298 MiB. More limited RAM on the shop PC could amplify that cost.
+
+Direct grayscale selection measured about 0.105 seconds and revisiting a cached
+channel about 0.026 seconds on the same PC. Irrelevant checkbox changes took
+about 0.0003 seconds. Bounded render bands reduced composite temporary memory
+to tens of MiB while keeping every full-resolution output pixel equal to the
+previous renderer. The UI additionally uses a fitted screen-sized colour
+preview and background jobs; full resolution is requested on zoom/100%.
+These local measurements are not a benchmark of the shop PC.
+
+Final GUI measurements on this PC: open to first fitted composite 0.441 seconds,
+first spot selection 0.104 seconds, cached switch with repaint 0.034 seconds,
+fitted composite checkbox change 0.195 seconds, and fitted white overlay 0.223
+seconds. The first 100% full-resolution composite took 4.15 seconds in the
+background. Peak GUI process RAM through the sequence was about 347 MiB.
+The fitted preview does not replace native image data; the 100% composite and
+full-resolution grayscale hashes matched the previous renderer exactly.
+
+Source hashes/native arrays stayed unchanged. The local profiles and screenshots
+are in ignored `validation/local/performance/`; private printing files are not
+bundled or uploaded. Tests exhaust all 65536 16-bit grayscale values and compare
+single-band/many-band colour previews with ICC, transparency and spot overlays.
+GUI regressions cover cached pixels after paint/undo, latest-view cancellation,
+load races, close cancellation and fitted/full-resolution coordinate mapping.
 
 Reference annotation objects, sidecars and annotated PNG/PDF export remain
 planned. Current drawing tools burn pixels into the selected channel and save

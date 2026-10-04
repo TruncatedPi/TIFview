@@ -5,8 +5,9 @@
 A local Windows desktop prototype for inspecting printing images and painting
 simple shapes and text into individual process, spot and mask channels. Edits
 change channel pixels in memory; **Save TIFF copy** writes a separate file.
-The original image stays untouched. Photoshop/RIP compatibility of edited
-copies still needs validation before production use.
+The original image stays untouched. The user has tested edited TIFFs successfully
+in Photoshop and PrintExp (Hosonsoft) for a Refinecolor 6090, and installed the
+portable app on another PC. This confirms that workflow with the tested files.
 
 ## Run on this computer
 
@@ -34,7 +35,7 @@ the other spots; click **Composite** to return to the colour image.
 **Windows 10/11, 64-bit (x64). Python is included in the portable download.**
 
 1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
-2. Download **TIFview-0.2.0-windows-x64.zip** and extract the entire ZIP.
+2. Download **TIFview-0.2.1-windows-x64.zip** and extract the entire ZIP.
 3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
 
 Keep the `_internal` folder with the executable. No Python installation, Git,
@@ -80,6 +81,9 @@ No virtual-environment activation is needed. For console diagnostics, run
 - Select **Composite** for the saved primary TIFF image, converted to a screen preview.
 - Select a channel row for grayscale. CMYK process channels show ink as dark;
   Photoshop spot channels show their stored mask, normally black for ink.
+- Spot labels show their relative **1-based sequence**, for example **1. w-front**,
+  **2. v-front**, **3. w-back**, **4. v-all**. Process, transparency and saved-mask
+  channels do not count. This changes the label only; exported names/order stay intact.
 - Use **Coloured mask** to inspect coverage on a checkerboard. Choose a display
   colour and opacity independently of the saved Photoshop preview colour/solidity.
 - For the composite, tick the extra channels you want and enable
@@ -173,7 +177,9 @@ with exact native pixels; the other eight planes, ICC profile and Photoshop laye
 bytes stay unchanged. Channel-resource blocks stay unchanged except for removed
 thumbnail caches. The saved copy has 360 dpi, LZW/interleaved storage,
 little-endian byte order, transparency and a rebuilt 614 × 391 pyramid.
-**Opening this edited copy in Photoshop and the target RIP remains unverified.**
+The user reports the edited TIFF workflow works in Photoshop and PrintExp.
+The installed Photoshop/PrintExp versions and an independent per-pixel display
+comparison have not been recorded.
 
 Automated fixtures also exercise unsigned 8/16-bit samples, uncompressed/LZW/ZIP
 (Deflate)/PackBits image data, both byte orders, interleaved and per-channel
@@ -203,8 +209,17 @@ selection, visibility and zoom controls are tested.
   PSD/PSB, and arbitrary Photoshop resource variants are not implemented.
 - The prototype loads the whole primary image into RAM. Its current TIFF limit
   is 40 million pixels or 512 MiB decoded samples. Very large printing files
-  need a later tile/region reader and viewport rendering. Channel changes are
-  synchronous after the background import; large previews can briefly pause the UI.
+  need a later tile/region reader. Grayscale channels use a direct 8-bit screen
+  plane (with rounded full-range conversion for 16-bit sources). A bounded 96 MiB
+  cache accelerates revisiting views and is invalidated after edits/undo/redo.
+  Large colour previews run in cancellable background jobs with bounded working
+  memory. Rapid view changes keep only the latest requested result.
+  While fitted, large composite/coloured views use a screen-sized preview mapped
+  to the original source coordinates. **100% or wheel zoom requests full resolution**;
+  the preview updates when ready. Individual grayscale channels always use full
+  source resolution. Pixel inspection and editing always use the native samples.
+  Edits and saves wait for a background colour preview to finish or cancel, so
+  it cannot read pixels while they are being changed. Channels, pan and zoom stay usable.
   The first edit also copies the native sample array; saving needs memory for
   verification and the pyramid.
 
@@ -220,8 +235,8 @@ See [architecture and resource rules](docs/architecture.md).
 
 1. **Current:** channel inspection, ellipse/box/line/text raster edits, undo/redo,
    verified TIFF-copy export and portable Windows packaging. Validate edited
-   copies in Photoshop/the RIP and collect more real save variants.
-2. **Planned:** layer-aware process editing and better large-file startup/RAM.
+   copies on more Photoshop/RIP configurations and collect more real save variants.
+2. **Planned:** layer-aware process editing and tiled loading beyond the current RAM limits.
 3. **Planned:** a versioned `.tifview.json` sidecar with source path, dimensions,
    checksum, reference annotations and view settings; reopen reference markup
    without burning it into channel pixels. Export reference views to PNG/PDF.

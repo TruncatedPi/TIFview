@@ -1,21 +1,21 @@
-Windows prototype with channel viewing, simple raster pixel edits and TIFF-copy export.
+Faster large-file channel viewing and spot-sequence labels.
 
 Download the **TIFview Windows x64 ZIP**, extract the entire archive, and run
 **TIFview/TIFview.exe**. Python is included. Keep the `_internal` folder alongside
 the executable. `setup.cmd` in the source ZIP automates download and setup.
 
-- Paint ellipses, boxes, lines and text into a selected process, spot or mask channel.
-- Black/white/gray shade, stroke thickness, filled shapes, font and text size controls.
-- Exact undo/redo, with original source files protected.
-- Save an 8/16-bit TIFF copy: LZW, interleaved, IBM-PC byte order, transparency,
-  original DPI/ICC/channel metadata and a rebuilt image pyramid.
-- Retain original Photoshop layer bytes for spot/saved-mask edits. Process or
-  transparency edits require a merged copy without layers; the save dialog explains this.
-- Windows CI checks pixels, navigation, edit history, TIFF saves and layer retention.
-  The frozen executable also paints all tools and verifies a layered TIFF round trip.
+- Direct grayscale display removes full-image float/RGB expansion when selecting channels.
+- A bounded preview cache accelerates revisiting channels/composite views; irrelevant
+  checkbox/display changes no longer regenerate grayscale.
+- Large colour previews run in cancellable background jobs with much lower temporary
+  memory. Fitted views use a screen-sized preview; 100%/wheel zoom requests full resolution.
+- Spot labels have a 1-based ordinal among spots, e.g. `1. White Ink`, `2. Varnish`.
+  TIFF names, order and native pixels are unchanged.
+- Regression checks cover 16-bit grayscale values, exact banded colour previews,
+  stale-result cancellation, cache invalidation after editing and file-load races.
 
-The supplied CMYK Photoshop TIFF passes local spot-edit/save/reopen checks,
-including unchanged other channels and layer bytes. **Opening edited copies
-in Photoshop and the target RIP is still unverified.** Full-size Photoshop
-display equivalence, layer-aware process editing, reference sidecars and
-annotated PNG/PDF exports remain pending. See the README and validation record.
+The user reports that v0.2.0 edited files work in Photoshop and PrintExp for the
+Refinecolor 6090, and installation succeeds on another PC. This update retains
+that TIFF writer and pixel-editing path. Shapes/text, undo/redo and saving copies
+with retained spot metadata/layers remain available. Full native arrays are still
+loaded into RAM; very large files beyond the current limits need tiled loading.

@@ -6,12 +6,14 @@ import time
 
 import numpy as np
 import tifffile
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
+import tifview.app as gui
 from tifview.app import ViewerWindow, configure_application
 from tifview.reader import load_image
+from tifview.render import render
 from tifview.writer import save_tiff_copy
 
 
@@ -29,6 +31,10 @@ def run(image_path: str, report_path: str) -> int:
     class CheckWindow(ViewerWindow):
         def load_failed(self, message):
             errors.append(message)  # No modal dialog in an unattended check.
+
+        def preview_failed(self, key, message):
+            errors.append(message)
+            super().preview_failed(key, message)
 
     window = CheckWindow()
     window.show()
@@ -53,6 +59,8 @@ def run(image_path: str, report_path: str) -> int:
             assert [c.name for c in doc.channels] == [
                 "Red", "Green", "Blue", "White Ink", "Varnish", "Saved selection"]
             assert [c.kind for c in doc.channels] == ["Process"] * 3 + ["Spot", "Spot", "Alpha mask"]
+            assert [window.channels.topLevelItem(i).text(0) for i in (4, 5, 6)] == [
+                "1. White Ink", "2. Varnish", "Saved selection"]
             for index, x, y, value in [(3, 110, 80, 0), (3, 10, 10, 255),
                                         (4, 480, 240, 0), (5, 620, 200, 100)]:
                 window.channels.setCurrentItem(window.channels.topLevelItem(index + 1))
@@ -101,14 +109,47 @@ def run(image_path: str, report_path: str) -> int:
                 assert saved.byteorder == "<" and not saved.is_bigtiff
                 assert int(saved.pages[0].compression) == 5
                 assert int(saved.pages[0].planarconfig) == 1
+            # Exercise the same thread/cancellation path as a large production
+            # file without making every portable build decode a huge fixture.
+            gui.ASYNC_PREVIEW_PIXELS = 0
+            window.preview_cache.clear()
+            window.channels.setCurrentItem(window.channels.topLevelItem(0))
+            assert window.previewer is not None
+            assert not window.save_action.isEnabled()
+            window.channels.topLevelItem(1).setCheckState(0, Qt.CheckState.Unchecked)
+            window.overlays.setChecked(True)
+            window.channels.topLevelItem(4).setCheckState(0, Qt.CheckState.Checked)
+            preview_deadline = time.monotonic() + 15
+            while window.previewer is not None and time.monotonic() < preview_deadline:
+                app.processEvents()
+                time.sleep(.005)
+            app.processEvents()
+            assert window.previewer is None and window._pending_preview is None
+            assert not errors, "; ".join(errors)
+            key, settings = window.preview_settings()
+            assert window._displayed_preview == key
+            pixels = window.view.image_item.pixmap().toImage().convertToFormat(QImage.Format.Format_RGB888)
+            rows = np.frombuffer(pixels.constBits(), np.uint8).reshape(pixels.height(), pixels.bytesPerLine())
+            displayed = rows[:, :pixels.width() * 3].reshape(pixels.height(), pixels.width(), 3)
+            np.testing.assert_array_equal(displayed, render(window.doc, **settings))
+            assert window.save_action.isEnabled()
+            np.testing.assert_array_equal(reopened.samples, window.doc.samples)
             assert hashlib.sha256(source.read_bytes()).hexdigest() == before
             result.update(passed=True, channels=doc.report()["channels"],
                           checks=["LZW decoding", "Photoshop names and types", "Qt channel pixels",
+                                  "spot sequence labels", "background previews and stale-result cancellation",
                                   "actual pixels, zoom and fit", "ellipse, box, line and text pixels",
                                   "exact undo and redo", "TIFF save and reopen", "opaque RLE layers and ICC",
                                   "rebuilt image pyramid", "untouched source"])
         except Exception as exc:
             result.update(passed=False, error=f"{type(exc).__name__}: {exc}")
+        if window.previewer is not None:
+            window._pending_preview = None
+            window.previewer.requestInterruption()
+            # Finish the worker before destroying its Qt owner, including on a
+            # failed check. Band cancellation makes this wait short.
+            window.previewer.wait(5000)
+            app.processEvents()
         report.parent.mkdir(parents=True, exist_ok=True)
         report.write_text(json.dumps(result, indent=2), encoding="utf-8")
         if window.edits:

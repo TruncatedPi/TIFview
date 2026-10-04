@@ -23,7 +23,13 @@ Save uses LZW, interleaved samples, IBM-PC byte order, transparency and a pyrami
 Spot/saved-mask edits can retain original Photoshop layers. Process/transparency
 edits require a merged copy without layers; review the save dialog.
 
-Photoshop/RIP reopening of edited copies still needs validation. Reference
+Spot labels show their relative order, e.g. 1. White Ink, 2. Varnish. Saved names
+and channel order are unchanged. Large fitted colour previews render in the
+background at screen size; use 100% or wheel zoom for full resolution.
+Grayscale channels always show full source pixels. Recent previews are cached.
+
+Edited TIFFs have been tested by the user in Photoshop and PrintExp for the
+Refinecolor 6090; the portable app also works on another PC. Reference
 annotation sidecars and PNG/PDF exports are planned. See README.md and
 docs/validation.md for verified behavior and limitations.
 

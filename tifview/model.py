@@ -56,7 +56,7 @@ class ImageDocument:
 
     def __post_init__(self):
         self.samples.flags.writeable = False
-        if self.icc_profile and self.color_mode in ("RGB", "CMYK", "Gray", "WhiteIsZero"):
+        if self.icc_profile and self.icc_transform is None and self.color_mode in ("RGB", "CMYK", "Gray", "WhiteIsZero"):
             import io
             from PIL import ImageCms
             try:
@@ -84,6 +84,20 @@ class ImageDocument:
     @property
     def maximum(self) -> int:
         return (1 << self.bits) - 1
+
+    def spot_sequence(self, index: int) -> int | None:
+        """Return a spot's 1-based sequence in stored order, for display only."""
+        if not 0 <= index < len(self.channels):
+            raise IndexError("Channel index out of range")
+        if self.channels[index].kind != "Spot":
+            return None
+        return sum(channel.kind == "Spot" for channel in self.channels[:index + 1])
+
+    def channel_label(self, index: int) -> str:
+        """Show spot order without changing the channel's saved Photoshop name."""
+        sequence = self.spot_sequence(index)
+        name = self.channels[index].name
+        return name if sequence is None else f"{sequence}. {name}"
 
     def report(self) -> dict:
         """JSON-safe diagnostic inventory; does not save into the source image."""

@@ -133,4 +133,33 @@ bit depth, orientation, channel names/types/display info, resources, ICC, layers
 resolution, encoding and pyramid pixels. Only a successful check publishes the
 copy. Editing is disabled during this background save; failures retain in-memory
 edits and leave an existing destination intact. These checks establish internal
-round-trip integrity, not independent Photoshop or RIP compatibility.
+round-trip integrity, not independent Photoshop or RIP compatibility. The user
+subsequently confirmed the v0.2.0 workflow works in Photoshop and PrintExp for
+the Refinecolor 6090; v0.2.1 leaves the TIFF writer/editing path intact.
+
+## Large-image previews
+
+Grayscale channels copy only one uint8 plane; uint16 uses a rounded full-range
+65536-entry lookup table. The Qt view accepts grayscale directly, avoiding
+float/RGB expansion. Colour previews process 65536-pixel row bands with original
+checkerboard coordinates, in-place arithmetic and one final RGB output. This
+bounds temporary memory while preserving full-resolution preview pixels.
+
+The UI caches at most 96 MiB of preview arrays. Keys contain only settings that
+affect displayed pixels; single-channel grayscale ignores composite visibility,
+overlay colours and opacity. A document/edit generation prevents reuse across
+files or edits. All entries are invalidated after painting, undo and redo.
+
+Large fitted colour views sample the native document at a stride sized to 1.5
+times the viewport's physical pixel density. The graphics item maps that preview
+to the unchanged source scene dimensions. Grayscale always uses full resolution;
+100% or wheel zoom requests a full-resolution colour preview. Source inspection,
+shape coordinates, editing and export always use the full native document.
+
+Colour jobs above two million source pixels run in one background thread.
+Changing the requested view interrupts work between bands and replaces the
+pending request with the newest one. A job result is installed only for its
+matching document generation/settings. Load-time old-file controls cannot start
+previews. Edit/save operations are disabled until a running preview finishes or
+cancels, preventing reads during in-place edits; channel selection/pan/zoom remain
+available. Closing cancels a preview safely before the normal unsaved-edit check.

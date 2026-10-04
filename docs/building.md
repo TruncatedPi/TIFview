@@ -10,6 +10,8 @@ They cover raw samples, 8/16-bit decoding, spot versus alpha/transparency,
 Qt channel pixels, visibility, wheel zoom, drag pan and keeping the viewport
 when selecting another channel, raster shapes/text, undo/redo and safe TIFF-copy
 export with channel metadata, ICC, layers, transparency, DPI and pyramids.
+They also cover spot sequence labels, preview cache invalidation after edits,
+exact 16-bit grayscale conversion and cancellation of stale background previews.
 The optional private production-file tests are
 skipped in GitHub; set `TIFVIEW_SAMPLE` locally to run it.
 
@@ -41,6 +43,8 @@ immutable original samples and the source hash. It also paints ellipses, boxes,
 lines and text into a spot, checks exact undo/redo and displayed pixels, and
 saves/reopens a TIFF copy preserving its RLE layers and ICC profile with a
 rebuilt pyramid. A failure stops packaging.
+It also verifies spot sequence labels and runs the background preview/cancellation
+path, comparing every displayed composite pixel with the expected render.
 The fixture and report stay in `build/`, not in the shipped app.
 
 Outputs: `dist/TIFview-<version>-windows-x64.zip`, a `.zip.sha256` file,

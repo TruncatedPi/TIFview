@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import math
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QPointF, QRectF
-from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap, QKeySequence
+from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap, QKeySequence, QTransform
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QFontComboBox, QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QHBoxLayout, QInputDialog,
@@ -16,9 +18,13 @@ from PySide6.QtWidgets import (
 
 from .model import ImageDocument
 from .reader import load_image
-from .render import render
+from .render import RenderCancelled, grayscale, render
+from .preview import PreviewCache, preview_key
 from .editing import EditSession, raster_shape
 from .writer import SaveOptions, layer_preservation_reason, save_tiff_copy
+
+
+ASYNC_PREVIEW_PIXELS = 2_000_000
 
 
 class ImageView(QGraphicsView):
@@ -42,6 +48,7 @@ class ImageView(QGraphicsView):
         self.tool = "Pan"
         self.stroke_width = 3
         self.filled = False
+        self.drawing_enabled = True
         self._drawing_start = None
         self._pan_position = None
         self.preview_item = QGraphicsPathItem()
@@ -61,6 +68,9 @@ class ImageView(QGraphicsView):
             event.accept()
             return
         if self.tool != "Pan" and event.button() == Qt.MouseButton.LeftButton:
+            if not self.drawing_enabled:
+                event.accept()
+                return
             point = self.mapToScene(event.position().toPoint())
             if self.image_item.pixmap().isNull() or not self.sceneRect().contains(point):
                 event.accept()
@@ -88,13 +98,23 @@ class ImageView(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
-    def set_image(self, array: np.ndarray, reset: bool = False):
-        h, w, _ = array.shape
-        image = QImage(array.data, w, h, array.strides[0], QImage.Format.Format_RGB888).copy()
+    def set_image(self, array: np.ndarray, reset: bool = False, source_size=None):
+        h, w = array.shape[:2]
+        image_format = QImage.Format.Format_Grayscale8 if array.ndim == 2 else QImage.Format.Format_RGB888
+        image = QImage(array.data, w, h, array.strides[0], image_format).copy()
+        if image.isNull():
+            raise MemoryError("Not enough memory for this screen preview")
         self.image_item.setPixmap(QPixmap.fromImage(image))
-        self.scene().setSceneRect(0, 0, w, h)
+        source_width, source_height = source_size or (w, h)
+        self.image_item.setTransform(QTransform.fromScale(source_width / w, source_height / h))
+        self.scene().setSceneRect(0, 0, source_width, source_height)
         if reset or self.fitted:
             self.fit_image()
+
+    def clear_image(self, width, height):
+        self.image_item.setPixmap(QPixmap())
+        self.scene().setSceneRect(0, 0, width, height)
+        self.fitted = True
 
     def emit_zoom(self):
         self.zoom_changed.emit(self.transform().m11() * self.viewport().devicePixelRatioF())
@@ -171,7 +191,9 @@ class Loader(QThread):
             doc = load_image(self.path)
             visible = {c.index for c in doc.channels[:doc.base_count]}
             visible |= {c.index for c in doc.channels if c.kind == "Transparency"}
-            self.loaded.emit(doc, render(doc, visible=visible))
+            # Make large documents selectable without waiting for their composite.
+            preview = render(doc, visible=visible) if doc.width * doc.height <= ASYNC_PREVIEW_PIXELS else None
+            self.loaded.emit(doc, preview)
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
@@ -190,6 +212,26 @@ class Saver(QThread):
             self.saved.emit(str(path))
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
+class Previewer(QThread):
+    loaded = Signal(object, object)
+    failed = Signal(object, str)
+
+    def __init__(self, doc, key, settings, stride=1):
+        super().__init__()
+        if stride > 1:
+            doc = replace(doc, samples=doc.display_samples[::stride, ::stride], orientation=1)
+        self.doc, self.key, self.settings = doc, key, settings
+
+    def run(self):
+        try:
+            pixels = render(self.doc, **self.settings, cancelled=self.isInterruptionRequested)
+            self.loaded.emit(self.key, pixels)
+        except RenderCancelled:
+            pass
+        except Exception as exc:
+            self.failed.emit(self.key, f"{type(exc).__name__}: {exc}")
 
 
 class TiffSaveDialog(QDialog):
@@ -239,6 +281,12 @@ class ViewerWindow(QMainWindow):
         self.doc: ImageDocument | None = None
         self.loader: Loader | None = None
         self.saver: Saver | None = None
+        self.previewer: Previewer | None = None
+        self.preview_cache = PreviewCache()
+        self._preview_version = 0
+        self._requested_preview = self._displayed_preview = None
+        self._pending_preview = None
+        self._close_after_preview = False
         self.edits: EditSession | None = None
         self.colors: dict[int, tuple[int, int, int]] = {}
         self.setWindowTitle("TIFview — channel viewer and pixel editor")
@@ -334,7 +382,7 @@ class ViewerWindow(QMainWindow):
         self.channels.setIconSize(QSize(40, 24))
         self.channels.setColumnWidth(0, 185)
         self.channels.currentItemChanged.connect(self.selection_changed)
-        self.channels.itemChanged.connect(lambda *_: self.refresh())
+        self.channels.itemChanged.connect(self.visibility_changed)
         layout.addWidget(self.channels, 1)
         self.style_combo = QComboBox()
         self.style_combo.addItems(["Grayscale channel", "Coloured mask"])
@@ -367,7 +415,7 @@ class ViewerWindow(QMainWindow):
         self.notice.setStyleSheet("background: #fff0cb; color: #563a00; padding: 8px;")
         layout.addWidget(self.notice)
         self.view = ImageView()
-        self.view.zoom_changed.connect(lambda value: self.zoom_label.setText(f" {value * 100:.1f}% "))
+        self.view.zoom_changed.connect(self.zoom_updated)
         self.view.pixel_hovered.connect(self.inspect_pixel)
         self.view.draw_requested.connect(self.apply_drawing)
         self.splitter = QSplitter()
@@ -382,9 +430,16 @@ class ViewerWindow(QMainWindow):
 
     def fit(self):
         self.view.fit_image()
+        self.refresh()
 
     def actual(self):
         self.view.actual_pixels()
+        self.refresh()
+
+    def zoom_updated(self, value):
+        self.zoom_label.setText(f" {value * 100:.1f}% ")
+        if self.doc is not None and self._displayed_preview is not None:
+            self.refresh()
 
     def choose_file(self):
         filename, _ = QFileDialog.getOpenFileName(
@@ -394,7 +449,7 @@ class ViewerWindow(QMainWindow):
             self.open_path(filename)
 
     def open_path(self, path: str):
-        if self.loader is not None or self.saver is not None:
+        if self.loader is not None or self.saver is not None or self.previewer is not None:
             return
         if not self.confirm_discard():
             return
@@ -413,6 +468,8 @@ class ViewerWindow(QMainWindow):
             loader.deleteLater()
         self.open_action.setEnabled(True)
         self.set_controls()
+        if self.doc:
+            self.refresh()
 
     def load_failed(self, message: str):
         QMessageBox.warning(self, "Could not open image", message)
@@ -421,6 +478,12 @@ class ViewerWindow(QMainWindow):
     def accept_document(self, doc: ImageDocument, preview: np.ndarray):
         self.doc = doc
         self.edits = EditSession(doc)
+        self._preview_version += 1
+        if self.previewer is not None:
+            self.previewer.requestInterruption()
+        self.preview_cache.clear()
+        self._requested_preview = self._displayed_preview = None
+        self._pending_preview = None
         self.colors = {}
         self.file_label.setText(doc.path.name)
         self.file_label.setToolTip(str(doc.path))
@@ -434,11 +497,13 @@ class ViewerWindow(QMainWindow):
         composite.setData(0, Qt.ItemDataRole.UserRole, -1)
         self.channels.addTopLevelItem(composite)
         for channel in doc.channels:
-            item = QTreeWidgetItem([channel.name, channel.kind])
+            item = QTreeWidgetItem([doc.channel_label(channel.index), channel.kind])
             item.setData(0, Qt.ItemDataRole.UserRole, channel.index)
             item.setCheckState(0, Qt.CheckState.Checked if channel.index < doc.base_count or
                                channel.kind == "Transparency" else Qt.CheckState.Unchecked)
-            item.setToolTip(0, f"Stored sample {channel.index}\n{channel.evidence}")
+            sequence = doc.spot_sequence(channel.index)
+            spot_note = f"Spot sequence {sequence}\n" if sequence is not None else ""
+            item.setToolTip(0, f"{spot_note}Original name: {channel.name}\nStored sample {channel.index}\n{channel.evidence}")
             item.setToolTip(1, channel.evidence)
             plane = doc.display_samples[::max(1, doc.height // 80), ::max(1, doc.width // 120), channel.index]
             gray = np.rint(plane.astype(np.float32) / doc.maximum * 255).astype(np.uint8)
@@ -476,8 +541,15 @@ class ViewerWindow(QMainWindow):
         self.notice.setToolTip("\n\n".join(messages))
         self.notice.setVisible(bool(messages))
         self.set_controls()
-        self.view.set_image(preview, reset=True)
         self.statusBar().showMessage("Source untouched · Wheel: zoom · Drag: pan · F: fit · 1: actual pixels")
+        if preview is None:
+            self.view.clear_image(doc.width, doc.height)
+            self.refresh()
+        else:
+            key, _ = self.preview_settings()
+            self.preview_cache.put(key, preview)
+            self._requested_preview = self._displayed_preview = key
+            self.view.set_image(preview, reset=True)
 
     def change_tool(self, tool):
         self.view.set_tool(tool)
@@ -496,7 +568,7 @@ class ViewerWindow(QMainWindow):
 
     def apply_drawing(self, tool, start, end, text=None):
         index = self.selected_index()
-        if self.edits is None or index is None or self.saver is not None or self.loader is not None:
+        if self.edits is None or index is None or self.saver is not None or self.loader is not None or self.previewer is not None:
             return
         if tool == "Text" and text is None:
             text, accepted = QInputDialog.getMultiLineText(self, "Paint text into channel", "Text:")
@@ -508,12 +580,15 @@ class ViewerWindow(QMainWindow):
                                 self.text_size.value())
             if mask and self.edits.apply(index, *mask, self.shade.value(), self.invert.isChecked()):
                 self.edits_changed()
-                self.statusBar().showMessage(f"Painted {tool.lower()} into {self.doc.channels[index].name} · Ctrl+Z: undo · Save TIFF copy to keep edits")
+                self.statusBar().showMessage(f"Painted {tool.lower()} into {self.doc.channel_label(index)} · Ctrl+Z: undo · Save TIFF copy to keep edits")
         except Exception as exc:
             QMessageBox.warning(self, "Could not paint channel", str(exc))
 
     def edits_changed(self):
         self.doc = self.edits.document
+        self._preview_version += 1
+        self.preview_cache.clear()
+        self._displayed_preview = None
         self.setWindowModified(self.edits.dirty)
         self.set_controls()
         self.refresh()
@@ -538,12 +613,12 @@ class ViewerWindow(QMainWindow):
                 40, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)))
 
     def undo(self):
-        if self.edits and self.saver is None and self.loader is None:
+        if self.edits and self.saver is None and self.loader is None and self.previewer is None:
             self.edits.undo()
             self.edits_changed()
 
     def redo(self):
-        if self.edits and self.saver is None and self.loader is None:
+        if self.edits and self.saver is None and self.loader is None and self.previewer is None:
             self.edits.redo()
             self.edits_changed()
 
@@ -556,7 +631,7 @@ class ViewerWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Discard
 
     def choose_save(self):
-        if self.edits is None or self.saver is not None or self.loader is not None:
+        if self.edits is None or self.saver is not None or self.loader is not None or self.previewer is not None:
             return
         dialog = TiffSaveDialog(self.edits.original, self.doc, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -569,7 +644,7 @@ class ViewerWindow(QMainWindow):
             self.save_copy(filename, dialog.options(), overwrite=True)
 
     def save_copy(self, filename, options=SaveOptions(), overwrite=False):
-        if self.edits is None or self.saver is not None or self.loader is not None:
+        if self.edits is None or self.saver is not None or self.loader is not None or self.previewer is not None:
             return
         self.tool_combo.setCurrentIndex(0)
         self.saver = Saver(self.edits.original, self.doc, filename, options, overwrite)
@@ -603,22 +678,25 @@ class ViewerWindow(QMainWindow):
     def set_controls(self):
         selected = self.selected_index() if self.doc else None
         busy = self.loader is not None or self.saver is not None
+        rendering = self.previewer is not None
         editable = self.doc is not None and self.doc.bits in (8, 16) and self.doc.color_mode != "Palette"
-        self.open_action.setEnabled(not busy)
-        self.save_action.setEnabled(editable and not busy)
-        self.undo_action.setEnabled(bool(self.edits and self.edits.can_undo and not busy))
-        self.redo_action.setEnabled(bool(self.edits and self.edits.can_redo and not busy))
-        self.edit_toolbar.setEnabled(editable and selected is not None and not busy)
+        self.open_action.setEnabled(not busy and not rendering)
+        self.save_action.setEnabled(editable and not busy and not rendering)
+        self.undo_action.setEnabled(bool(self.edits and self.edits.can_undo and not busy and not rendering))
+        self.redo_action.setEnabled(bool(self.edits and self.edits.can_redo and not busy and not rendering))
+        self.edit_toolbar.setEnabled(editable and selected is not None and not busy and not rendering)
+        self.channels.setEnabled(self.loader is None)
+        self.view.drawing_enabled = editable and selected is not None and not busy and not rendering
         if not editable or selected is None or busy:
             self.tool_combo.setCurrentIndex(0)
             self.view.set_tool("Pan")
         if self.doc:
             self.shade.setMaximum(self.doc.maximum)
-        self.style_combo.setEnabled(selected is not None)
-        self.invert.setEnabled(selected is not None)
-        self.color_button.setEnabled(selected is not None)
-        self.overlays.setEnabled(self.doc is not None and selected is None)
-        self.opacity.setEnabled(self.doc is not None)
+        self.style_combo.setEnabled(selected is not None and self.loader is None)
+        self.invert.setEnabled(selected is not None and self.loader is None)
+        self.color_button.setEnabled(selected is not None and self.loader is None)
+        self.overlays.setEnabled(self.doc is not None and selected is None and self.loader is None)
+        self.opacity.setEnabled(self.doc is not None and self.loader is None)
         if self.doc and selected is not None:
             c = self.doc.channels[selected]
             text = f"Sample {c.index}: {c.evidence}\n"
@@ -626,6 +704,7 @@ class ViewerWindow(QMainWindow):
                 label = "Solidity" if c.kind == "Spot" else "Saved opacity"
                 text += f"{label}: {c.display.opacity}% · colour space {c.display.color_space}\n"
             if c.kind == "Spot":
+                text = f"Spot sequence {self.doc.spot_sequence(selected)} · " + text
                 text += "Black = ink in grayscale. Overlay is an approximate mask preview."
             elif c.kind == "Unknown":
                 text += "Raw grayscale; type and ink polarity are unknown."
@@ -654,16 +733,88 @@ class ViewerWindow(QMainWindow):
                 for i in range(1, self.channels.topLevelItemCount())
                 if self.channels.topLevelItem(i).checkState(0) == Qt.CheckState.Checked}
 
+    def visibility_changed(self, *_):
+        if self.selected_index() is None:
+            self.refresh()
+
+    def preview_settings(self):
+        settings = dict(selected=self.selected_index(), colored=self.style_combo.currentIndex() == 1,
+                        visible=self.visible_indices(), overlays=self.overlays.isChecked(),
+                        opacity=self.opacity.value() / 100, invert=self.invert.isChecked(), colors=dict(self.colors))
+        stride = 1
+        if self.view.fitted and self.doc.width * self.doc.height > 2_000_000 and (
+                settings["selected"] is None or settings["colored"]):
+            ratio = self.view.viewport().devicePixelRatioF()
+            target_width = max(1, self.view.viewport().width() * ratio * 1.5)
+            target_height = max(1, self.view.viewport().height() * ratio * 1.5)
+            stride = max(1, math.ceil(max(self.doc.width / target_width, self.doc.height / target_height)))
+        return (self._preview_version, stride, preview_key(self.doc, **settings)), settings
+
     def refresh(self):
-        if self.doc is None:
+        if self.doc is None or self.loader is not None:
             return
-        try:
-            preview = render(self.doc, self.selected_index(), self.style_combo.currentIndex() == 1,
-                             self.visible_indices(), self.overlays.isChecked(), self.opacity.value() / 100,
-                             self.invert.isChecked(), self.colors)
-            self.view.set_image(preview)
-        except Exception as exc:
-            self.statusBar().showMessage(f"Preview error: {exc}")
+        key, settings = self.preview_settings()
+        self._requested_preview = key
+        self._pending_preview = None
+        if self.previewer is not None and self.previewer.key != key:
+            self.previewer.requestInterruption()
+        if key == self._displayed_preview:
+            return
+        cached = self.preview_cache.get(key)
+        if cached is not None:
+            self.install_preview(key, cached)
+            return
+        # Native grayscale is cheap enough to prepare directly. Composite and
+        # coloured masks for large images run off the UI thread and coalesce.
+        if settings["selected"] is not None and not settings["colored"]:
+            self.install_preview(key, grayscale(self.doc, settings["selected"], settings["invert"]))
+        elif self.doc.width * self.doc.height > ASYNC_PREVIEW_PIXELS:
+            if self.previewer is None:
+                self.start_preview(key, settings)
+            elif self.previewer.key != key or self.previewer.isInterruptionRequested():
+                self._pending_preview = key, settings
+        else:
+            try:
+                self.install_preview(key, render(self.doc, **settings))
+            except Exception as exc:
+                self.statusBar().showMessage(f"Preview error: {exc}")
+
+    def install_preview(self, key, pixels):
+        self.preview_cache.put(key, pixels)
+        self._displayed_preview = key
+        self.view.set_image(pixels, source_size=(self.doc.width, self.doc.height))
+
+    def start_preview(self, key, settings):
+        self.previewer = Previewer(self.doc, key, settings, stride=key[1])
+        self.previewer.loaded.connect(self.preview_loaded)
+        self.previewer.failed.connect(self.preview_failed)
+        self.previewer.finished.connect(self.preview_finished)
+        self.set_controls()
+        self.statusBar().showMessage("Preparing image preview… Channels, pan and zoom remain available.")
+        self.previewer.start()
+
+    def preview_loaded(self, key, pixels):
+        if key == self._requested_preview and not self.previewer.isInterruptionRequested():
+            self.install_preview(key, pixels)
+            self.statusBar().showMessage("Source untouched · Preview ready")
+
+    def preview_failed(self, key, message):
+        if key == self._requested_preview:
+            self.statusBar().showMessage(f"Preview error: {message}")
+
+    def preview_finished(self):
+        worker, self.previewer = self.previewer, None
+        worker.deleteLater()
+        pending, self._pending_preview = self._pending_preview, None
+        self.set_controls()
+        if self._close_after_preview:
+            self._close_after_preview = False
+            self.close()
+        elif pending is not None and pending[0] == self._requested_preview:
+            self.start_preview(*pending)
+        else:
+            if self._requested_preview == self._displayed_preview:
+                self.statusBar().showMessage("Source untouched · Preview ready")
 
     def choose_color(self):
         index = self.selected_index()
@@ -681,7 +832,7 @@ class ViewerWindow(QMainWindow):
         index = self.selected_index()
         if index is not None:
             value = int(self.doc.display_samples[y, x, index])
-            name = self.doc.channels[index].name
+            name = self.doc.channel_label(index)
             text = f"{name}: {value} / {self.doc.maximum}"
             if self.doc.channels[index].kind == "Spot":
                 text += f" · ink {(1 - value / self.doc.maximum) * 100:.1f}% (assumed polarity)"
@@ -721,6 +872,11 @@ class ViewerWindow(QMainWindow):
         # A decoder cannot safely be terminated midway through a codec operation.
         if (self.loader is not None and self.loader.isRunning()) or (self.saver is not None and self.saver.isRunning()):
             self.statusBar().showMessage("Please wait for the image read/save to finish before closing.")
+            event.ignore()
+        elif self.previewer is not None:
+            self.previewer.requestInterruption()
+            self._pending_preview = None
+            self._close_after_preview = True
             event.ignore()
         elif not self.confirm_discard():
             event.ignore()
