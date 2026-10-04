@@ -4,6 +4,10 @@ A local Windows desktop prototype for inspecting printing images and their
 channels. The viewer opens source files read-only. Photoshop remains the tool
 for editing production files.
 
+The current milestone is seeing the full image pixels on selected process and
+spot channels, with standard pan and zoom. Annotation work is on hold until
+the user has tried and accepted channel viewing in the desktop app.
+
 ## Run on this computer
 
 Dependencies are already installed in `C:\Source\TIFview\.venv`.
@@ -19,6 +23,11 @@ Open the supplied Photoshop sample directly:
 ```powershell
 .\.venv\Scripts\python.exe -m tifview 'D:\Download2\SPacificPrint\jobs\Bailey\Back 360dpi V6a (10%)spot34-wv.tif'
 ```
+
+Click **w-back** in the channel-name column to see its full mask in the main
+image area. Click **100%** to view actual pixels, use the mouse wheel to zoom,
+and drag the image to pan. Click **w-front**, **v-front** or **v-all** to inspect
+the other spots; click **Composite** to return to the colour image.
 
 This is a source prototype, not a packaged executable or installer.
 
@@ -129,7 +138,7 @@ See [architecture and resource rules](docs/architecture.md).
 
 1. **Current:** read-only channel inspection; validate more Photoshop files and
    full-size masks, then improve large-file startup/RAM and package a Windows build.
-2. **Planned:** text, ellipses/circles, lines, arrows and rectangles, display colour
+2. **On hold until channel viewing is accepted:** text, ellipses/circles, lines, arrows and rectangles, display colour
    and thickness controls, undo/redo. Store coordinates in source-image space.
 3. **Planned:** a versioned `.tifview.json` sidecar with source path, dimensions,
    checksum, annotations and view settings; reopen it without writing to the TIFF.
