@@ -11,6 +11,7 @@ from tifview.layercheck import spot_structure_layer_reason
 
 
 SIGNATURE = b"Adobe Photoshop Document Data Block\0"
+NEUTRAL_RANGE = b"\x00\x00\xff\xff\x00\x00\xff\xff"
 
 
 def tag(key, payload=b"", byteorder="<", alignment=4):
@@ -79,10 +80,55 @@ def test_process_only_blending_restrictions_are_safe_but_extra_references_are_no
     assert "unsupported" in spot_structure_layer_reason(layer_data(extra_tags=malformed, byteorder=byteorder), 3)
 
 
-def test_extra_channel_blending_ranges_are_rejected():
-    assert spot_structure_layer_reason(layer_data(ranges=b"\0" * 32), 3) is None
-    assert "additional channels" in spot_structure_layer_reason(layer_data(ranges=b"\0" * 40), 3)
-    assert "unsupported" in spot_structure_layer_reason(layer_data(ranges=b"\0" * 31), 3)
+@pytest.mark.parametrize("byteorder", ["<", ">"])
+@pytest.mark.parametrize("process_ranges", [NEUTRAL_RANGE * 4, b"\0" * 32])
+def test_neutral_extra_blending_ranges_preserve_original_layer_bytes(byteorder, process_ranges):
+    # Composite + RGB ranges may be custom; only entries beyond that prefix
+    # need to be neutral. Split slider values are bytes in either byte order.
+    data = layer_data(ranges=process_ranges + NEUTRAL_RANGE * 2, byteorder=byteorder)
+    before = bytes(data)
+    assert spot_structure_layer_reason(data, 3) is None
+    assert data == before
+
+
+@pytest.mark.parametrize("byteorder", ["<", ">"])
+@pytest.mark.parametrize("extra_ranges", [b"\0" * 8,
+                                           NEUTRAL_RANGE + b"\0" * 8,
+                                           b"\0" * 8 + NEUTRAL_RANGE])
+def test_custom_extra_channel_blending_ranges_are_rejected(byteorder, extra_ranges):
+    data = layer_data(ranges=NEUTRAL_RANGE * 4 + extra_ranges, byteorder=byteorder)
+    assert "additional channels" in spot_structure_layer_reason(data, 3)
+
+
+@pytest.mark.parametrize("byteorder", ["<", ">"])
+@pytest.mark.parametrize("ranges_size", [31, 41])
+def test_malformed_blending_range_lengths_are_rejected(byteorder, ranges_size):
+    data = layer_data(ranges=(NEUTRAL_RANGE * 6)[:ranges_size], byteorder=byteorder)
+    assert "unsupported" in spot_structure_layer_reason(data, 3)
+
+
+@pytest.mark.parametrize("byteorder", ["<", ">"])
+@pytest.mark.parametrize("top_level", [False, True])
+@pytest.mark.parametrize("dependency", [b"Alph", b"brst", b"malformed_brst", b"truncated_tag"])
+def test_neutral_extra_ranges_do_not_bypass_later_layer_checks(byteorder, top_level, dependency):
+    alignment = 4 if top_level else 2
+    if dependency == b"Alph":
+        unsafe = tag(b"Alph", byteorder=byteorder, alignment=alignment)
+        reason = "Alph"
+    elif dependency == b"brst":
+        unsafe = tag(b"brst", struct.pack(byteorder + "i", 3), byteorder, alignment)
+        reason = "restrictions"
+    elif dependency == b"malformed_brst":
+        unsafe = tag(b"brst", b"abc", byteorder, alignment)
+        reason = "unsupported"
+    else:
+        unsafe = b"MIB8vowv" if byteorder == "<" else b"8BIMvowv"
+        reason = "truncated"
+    data = layer_data(ranges=NEUTRAL_RANGE * 5, byteorder=byteorder,
+                      extra_tags=b"" if top_level else unsafe)
+    if top_level:
+        data += unsafe
+    assert reason in spot_structure_layer_reason(data, 3)
 
 
 @pytest.mark.parametrize("data", [b"", SIGNATURE[:-1], b"Adobe Photoshop Document Data V0002\0",

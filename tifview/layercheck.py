@@ -16,6 +16,7 @@ import struct
 
 _SIGNATURE = b"Adobe Photoshop Document Data Block\0"
 _LAYER_KEYS = {b"Layr", b"Lr16", b"Lr32"}
+_NEUTRAL_BLEND_RANGE = b"\x00\x00\xff\xff\x00\x00\xff\xff"
 
 
 class _InvalidLayerData(ValueError):
@@ -110,11 +111,16 @@ def _scan_layers(cursor: _Cursor, base_count: int) -> str | None:
         (mask_size,) = extra.unpack("I")
         extra.skip(mask_size)
         (ranges_size,) = extra.unpack("I")
-        extra.skip(ranges_size)
+        ranges = extra.take(ranges_size)
         if ranges_size % 8:
             raise _InvalidLayerData("unsupported Photoshop layer blending ranges")
-        if ranges_size > 8 * (base_count + 1):
-            return "Photoshop layer blending ranges reference additional channels."
+        # Default source/destination black/white split values do not restrict
+        # blending. Photoshop may retain these neutral entries beyond the
+        # current process channels. Keep the original bytes, and reject any
+        # extra entry that actually depends on an additional channel's values.
+        for offset in range(8 * (base_count + 1), ranges_size, 8):
+            if ranges[offset:offset + 8] != _NEUTRAL_BLEND_RANGE:
+                return "Photoshop layer blending ranges have custom settings for additional channels."
         (name_size,) = extra.unpack("B")
         extra.skip(name_size)
         extra.skip((-(name_size + 1)) % 4)

@@ -49,7 +49,11 @@ def make_demo(path: Path, layers: bool = False):
         from psdtags import (PsdChannel, PsdChannelId, PsdCompressionType, PsdFormat, PsdKey,
                              PsdLayer, PsdLayers, PsdRectangle, PsdUserMask, TiffImageSourceData)
         channels = [PsdChannel(PsdChannelId(i), PsdCompressionType.RLE, data[..., i].copy()) for i in range(3)]
-        layer = PsdLayer("SYNTHETIC original base", channels, PsdRectangle(0, 0, h, w))
+        # Photoshop may retain a neutral fourth-channel range in an RGB file.
+        # Exercise that preservation path in the packaged create/reorder check.
+        neutral_ranges = struct.unpack("<10i", bytes.fromhex("0000ffff0000ffff") * 5)
+        layer = PsdLayer("SYNTHETIC original base", channels, PsdRectangle(0, 0, h, w),
+                         blending_ranges=neutral_ranges)
         source_data = TiffImageSourceData(PsdFormat.LE32BIT, PsdLayers(PsdKey.LAYER, [layer]), PsdUserMask())
         tags.append(source_data.tifftag(compression=PsdCompressionType.RLE))
         profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()

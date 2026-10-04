@@ -175,9 +175,10 @@ verified its displayed pixels, saved asynchronously and checked every output
 sample. The source hash stayed unchanged. Private TIFFs, reports and the save
 dialog screenshot remain in ignored `validation/local/bugfixes/`.
 
-This particular source's layer blending ranges reference additional channels,
-so the existing safety check requires an explicit merged save without layers
-after adding a spot. Content Credentials are omitted from rewritten copies and
+At v0.3.1, the count-based layer check rejected this source's extra blending
+records and required an explicit merged save without layers after adding a
+spot. The v0.3.2 investigation below establishes that those records are neutral
+defaults. Content Credentials are omitted from rewritten copies and
 the dialog explains why. Their signatures are not parsed or independently
 validated. Unknown directories and genuinely additional images still block saving.
 
@@ -187,6 +188,30 @@ frozen Windows executable passes the existing GUI/edit/save smoke check plus
 the same workflow on a generated fixture with a final credential-only directory.
 The local header-only demo was recreated and its native channel pixels verified.
 Photoshop/PrintExp validation of the new saved sample remains pending.
+
+## Preserve neutral layer blending records (v0.3.2)
+
+The same RGB source has three layers. Each contains five blending-range records
+(composite plus four channel entries) even though the image is RGB. Every entry
+is exactly `0000ffff0000ffff`: neutral source/destination black/white defaults.
+The previous check rejected their count without examining their values. No layer
+pixels or known blending restrictions refer to the document's spot samples.
+
+The scanner now accepts neutral extra records while still rejecting custom extra
+ranges, embedded extra-channel dependencies and malformed/unsupported data.
+A separate private copy adds and paints a new spot while retaining the entire
+10,532,480-byte original layer block verbatim. Every native output sample, the
+existing process/spot pixels, 600 dpi and rebuilt pyramid are checked; the source
+hash stays unchanged. Original layer names are Layer 0, Generative Expand and
+Rectangle 1. Private TIFF/report artifacts remain in `validation/local/bugfixes/`.
+
+Regression tests cover neutral/custom extra ranges in both layer byte orders,
+later unsafe blocks, mixed spot operations and 8/16-bit saves with unchanged
+layer bytes; the local suite passes 258 tests. The save-dialog integration check
+also confirms layer retention remains selected after creating a spot. The
+packaged smoke fixture now includes these neutral extra records
+so the actual executable must retain them through its changed-channel save.
+Photoshop/PrintExp comparison of this new layered copy remains pending.
 
 ## Large-image performance update
 

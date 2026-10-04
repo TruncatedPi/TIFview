@@ -10,18 +10,22 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel
 
 from tifview.app import ImageView, TiffSaveDialog, ViewerWindow, configure_application
+from tifview.editing import EditSession
 from tifview.reader import load_image
 from tools.make_demo import make_demo
 
 
-def test_tiff_save_explains_content_credentials_omission(tmp_path):
+def test_new_spot_keeps_layers_selected_and_explains_content_credentials_omission(tmp_path):
     app = QApplication.instance() or QApplication([])
     path = tmp_path / "demo.tif"
-    make_demo(path)
+    make_demo(path, layers=True)
     doc = load_image(path)
     doc.metadata["has_content_credentials"] = True
-    dialog = TiffSaveDialog(doc, doc)
+    edits = EditSession(doc)
+    edits.add_spot("New white")
+    dialog = TiffSaveDialog(doc, edits.document)
     try:
+        assert dialog.layers.isEnabled() and dialog.options().keep_layers
         assert any("Content Credentials are omitted" in label.text()
                    for label in dialog.findChildren(QLabel))
     finally:

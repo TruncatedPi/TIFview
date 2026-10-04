@@ -35,7 +35,7 @@ the other spots; click **Composite** to return to the colour image.
 **Windows 10/11, 64-bit (x64). Python is included in the portable download.**
 
 1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
-2. Download **TIFview-0.3.1-windows-x64.zip** and extract the entire ZIP.
+2. Download **TIFview-0.3.2-windows-x64.zip** and extract the entire ZIP.
 3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
 
 Keep the `_internal` folder with the executable. No Python installation, Git,
@@ -154,8 +154,9 @@ removed after edits so they cannot show the old pixels; pyramid pixels are rebui
 
 **Photoshop layers can be retained for spot-channel and saved-alpha-mask edits**
 when the source uses IBM-PC byte order. Spot count/order changes also check the
-layer headers for additional channel dependencies. Both supplied TIFFs pass this
-check; unsupported or spot-dependent layer structures require a merged copy.
+layer headers for additional channel dependencies. Neutral default blending-range
+entries do not block retention. Unsupported or spot-dependent layer structures
+require a merged copy.
 The original layer block is copied
 verbatim, retaining its RLE/ZIP compression and unknown Photoshop layer data.
 The app does not edit or recompose these layers. If CMYK/RGB/grayscale process
@@ -164,6 +165,19 @@ different image. The save dialog therefore requires a **merged copy without
 Photoshop layers**, while keeping all process, spot and mask channel pixels.
 Undo those edits to retain layers. Macintosh layer blocks also currently require
 a merged copy when exporting to the IBM-PC preset.
+
+| Operation | Layer retention |
+|---|---|
+| View, zoom, pan or change temporary overlays | Preserved; image data does not change |
+| Paint existing spot/saved-alpha masks; change spot names, preview colours or solidity | Preserved when process/transparency pixels stay unchanged |
+| Create, duplicate, delete or reorder spots | Preserved when the layer metadata passes the dependency check |
+| Paint RGB, CMYK, grayscale or image-transparency pixels | Requires a merged copy; editing/recomposing layer pixels is not implemented |
+| Save Macintosh-byte-order layers using the IBM-PC preset | Requires a merged copy; layer byte-order conversion is not implemented |
+
+The save dialog selects layer retention whenever supported and explains any
+restriction. Layer removal affects only the new copy; all spot/mask samples
+remain separate. Start from the original layered TIFF if an earlier saved copy
+has already omitted its layers.
 
 Associated transparency needs coupled process samples: painting its alpha plane
 rescales the premultiplied process values, while painting a process plane clamps

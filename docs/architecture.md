@@ -184,7 +184,10 @@ The writer maps process/transparency planes by original identity before deciding
 whether layers remain consistent. On spot count/order changes, `layercheck.py`
 scans bounded 37724 headers without decoding pixels or opaque tagged payloads.
 It rejects embedded extra-channel pixels, Alph blocks, additional-channel
-restrictions/blending ranges and malformed/unsupported framing. Supported
+restrictions/custom blending ranges and malformed/unsupported framing. Excess
+blending-range records are allowed only when both source and destination have
+the exact neutral black/white defaults (`0000ffff0000ffff`). These records do not
+restrict blending; no layer payload is rewritten or normalized. Supported
 layer bytes are copied verbatim. Both supplied blocks pass this check.
 These internal checks do not establish a new Photoshop/PrintExp round trip.
 

@@ -19,7 +19,7 @@ from tools.make_demo import photoshop_resources, resource
 SCREEN = bytes.fromhex("000000000001000000000000000000000000")
 
 
-def source_file(tmp_path, bits=8, extra_resource=b""):
+def source_file(tmp_path, bits=8, extra_resource=b"", blending_ranges=()):
     samples = np.full((9, 13, 7), [70, 40, 90, 15, 128, 210, 37], dtype=f"uint{bits}")
     if bits == 16:
         samples *= 257
@@ -31,7 +31,8 @@ def source_file(tmp_path, bits=8, extra_resource=b""):
     opaque = b"8BIM\x75\x30\x03abc\x00\x00\x00\x03xyz\x00"
     ps += ids + screens + alternate + opaque + extra_resource
     layer = PsdLayer("Original process layer", [PsdChannel(PsdChannelId(i), PsdCompressionType.RLE,
-                    samples[..., i].copy()) for i in range(3)], PsdRectangle(0, 0, 9, 13))
+                    samples[..., i].copy()) for i in range(3)], PsdRectangle(0, 0, 9, 13),
+                    blending_ranges=blending_ranges)
     layers = TiffImageSourceData(PsdFormat.LE32BIT,
              PsdLayers(PsdKey.LAYER if bits == 8 else PsdKey.LAYER_16, [layer]), PsdUserMask()).tobytes()
     profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
@@ -96,6 +97,28 @@ def test_deleting_spot_before_transparency_keeps_original_alpha_and_layer_pixels
     np.testing.assert_array_equal(reopened.samples[..., 3], original.samples[..., 4])
     with tifffile.TiffFile(target) as saved:
         assert saved.pages[0].tags[37724].value == layers
+
+
+@pytest.mark.parametrize("bits", [8, 16])
+def test_neutral_extra_blending_ranges_retain_layers_after_spot_edits(tmp_path, bits):
+    ranges = struct.unpack("<10i", bytes.fromhex("0000ffff0000ffff") * 5)
+    original, layers, _ = source_file(tmp_path, bits, blending_ranges=ranges)
+    before = hashlib.sha256(original.path.read_bytes()).digest()
+    edits = EditSession(original)
+    edits.add_spot("New white")
+    duplicate = edits.add_spot("White copy", source_index=3)
+    edits.move_spot(duplicate, 1)
+    edits.delete_spot(5)
+    edits.apply(7, (1, 1, 4, 4), np.full((3, 3), 255, np.uint8), 0)
+    target = save_tiff_copy(original, edits.document, tmp_path / "layered-spots.tif")
+    reopened = load_image(target)
+    np.testing.assert_array_equal(reopened.samples, edits.document.samples)
+    assert [(c.name, c.kind, c.display) for c in reopened.channels] == [
+        (c.name, c.kind, c.display) for c in edits.document.channels]
+    assert reopened.metadata["has_photoshop_layers"]
+    with tifffile.TiffFile(target) as saved:
+        assert saved.pages[0].tags[37724].value == layers
+    assert hashlib.sha256(original.path.read_bytes()).digest() == before
 
 
 def test_unsupported_channel_dependencies_fail_without_changing_session(tmp_path):
