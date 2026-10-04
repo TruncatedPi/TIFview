@@ -12,7 +12,7 @@ from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QIcon, QImage, 
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QFontComboBox, QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QHBoxLayout, QInputDialog,
-    QLabel, QMainWindow, QMessageBox, QPushButton, QSlider, QSplitter, QTextEdit,
+    QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton, QSlider, QSplitter, QTextEdit,
     QSpinBox, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -25,6 +25,7 @@ from .writer import SaveOptions, layer_preservation_reason, save_tiff_copy
 
 
 ASYNC_PREVIEW_PIXELS = 2_000_000
+CHANNEL_ID_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
 
 class ImageView(QGraphicsView):
@@ -234,6 +235,60 @@ class Previewer(QThread):
             self.failed.emit(self.key, f"{type(exc).__name__}: {exc}")
 
 
+class SpotDialog(QDialog):
+    """Name and saved Photoshop display metadata; mask pixels are independent."""
+    def __init__(self, title, name, color=(255, 255, 255), solidity=100, note="", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.color = tuple(color)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Spot name (saved exactly as entered)"))
+        self.name = QLineEdit(name)
+        self.name.selectAll()
+        layout.addWidget(self.name)
+        self.color_button = QPushButton()
+        self.update_color_button()
+        self.color_button.clicked.connect(self.choose_color)
+        layout.addWidget(self.color_button)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Saved solidity"))
+        self.solidity = QSpinBox()
+        self.solidity.setRange(0, 100)
+        self.solidity.setValue(solidity)
+        self.solidity.setSuffix("%")
+        row.addWidget(self.solidity)
+        row.addStretch()
+        layout.addLayout(row)
+        explanation = QLabel(note + "\nThese properties are saved in the TIFF. Colour and solidity affect the "
+                              "Photoshop preview; they do not change mask pixels or set printer ink density. "
+                              "The sidebar display colour and overlay opacity are temporary viewing controls.")
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(bool(name.strip()))
+        self.name.textChanged.connect(lambda text: buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(bool(text.strip())))
+        self.resize(460, 290)
+
+    def update_color_button(self):
+        r, g, b = self.color
+        self.color_button.setText(f"Saved preview colour…  RGB {r}, {g}, {b}")
+        swatch = QPixmap(18, 18)
+        swatch.fill(QColor(*self.color))
+        self.color_button.setIcon(QIcon(swatch))
+
+    def choose_color(self):
+        chosen = QColorDialog.getColor(QColor(*self.color), self, "Saved spot preview colour")
+        if chosen.isValid():
+            self.color = (chosen.red(), chosen.green(), chosen.blue())
+            self.update_color_button()
+
+    def values(self):
+        return self.name.text(), self.color, self.solidity.value()
+
+
 class TiffSaveDialog(QDialog):
     def __init__(self, original, edited, parent=None):
         super().__init__(parent)
@@ -256,9 +311,9 @@ class TiffSaveDialog(QDialog):
         if reason:
             explanation = reason + "\nThis copy will contain the merged image and all channels without Photoshop layers. "
             if original.metadata.get("byte_order") == "IBM PC (little endian)":
-                explanation += "To retain layers, undo the process/transparency edits."
+                explanation += "To retain layers, undo the incompatible changes described above."
         elif has_layers:
-            explanation = "Spot and saved-mask edits retain the original layer block, including its existing RLE/ZIP compression."
+            explanation = "These spot-channel changes and saved-mask edits can retain the original layer block, including its existing RLE/ZIP compression."
         else:
             explanation = "The source has no Photoshop layers. All image and extra channel pixels are saved."
         explanation += "\nThe source image stays untouched. Check the first edited copy in Photoshop and your RIP."
@@ -289,6 +344,7 @@ class ViewerWindow(QMainWindow):
         self._close_after_preview = False
         self.edits: EditSession | None = None
         self.colors: dict[int, tuple[int, int, int]] = {}
+        self._channel_preferences = {}
         self.setWindowTitle("TIFview — channel viewer and pixel editor")
         self.resize(1200, 800)
         self.setMinimumSize(820, 540)
@@ -329,6 +385,16 @@ class ViewerWindow(QMainWindow):
         self.metadata_action.triggered.connect(self.show_details)
         self.metadata_action.setEnabled(False)
         toolbar.addAction(self.metadata_action)
+
+        self.spot_menu = self.menuBar().addMenu("Spots")
+        self.new_spot_action = self.spot_menu.addAction("New spot…", self.new_spot)
+        self.duplicate_spot_action = self.spot_menu.addAction("Duplicate spot…", self.duplicate_spot)
+        self.spot_properties_action = self.spot_menu.addAction("Spot properties…", self.spot_properties)
+        self.spot_menu.addSeparator()
+        self.move_spot_up_action = self.spot_menu.addAction("Move spot up", lambda: self.move_spot(-1))
+        self.move_spot_down_action = self.spot_menu.addAction("Move spot down", lambda: self.move_spot(1))
+        self.spot_menu.addSeparator()
+        self.delete_spot_action = self.spot_menu.addAction("Delete spot…", self.delete_spot)
 
         self.edit_toolbar = QToolBar("Pixel edits")
         self.edit_toolbar.setMovable(False)
@@ -375,7 +441,7 @@ class ViewerWindow(QMainWindow):
         self.dimensions = QLabel("TIFF · PNG · JPEG · BMP · WebP")
         self.dimensions.setWordWrap(True)
         layout.addWidget(self.dimensions)
-        layout.addWidget(QLabel("Channels"))
+        layout.addWidget(QLabel("Channels · right-click for spot options"))
         self.channels = QTreeWidget()
         self.channels.setHeaderLabels(["Channel", "Type"])
         self.channels.setRootIsDecorated(False)
@@ -383,6 +449,8 @@ class ViewerWindow(QMainWindow):
         self.channels.setColumnWidth(0, 185)
         self.channels.currentItemChanged.connect(self.selection_changed)
         self.channels.itemChanged.connect(self.visibility_changed)
+        self.channels.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.channels.customContextMenuRequested.connect(self.show_spot_menu)
         layout.addWidget(self.channels, 1)
         self.style_combo = QComboBox()
         self.style_combo.addItems(["Grayscale channel", "Coloured mask"])
@@ -485,39 +553,13 @@ class ViewerWindow(QMainWindow):
         self._requested_preview = self._displayed_preview = None
         self._pending_preview = None
         self.colors = {}
+        self._channel_preferences = {}
         self.file_label.setText(doc.path.name)
         self.file_label.setToolTip(str(doc.path))
-        self.dimensions.setText(f"{doc.width:,} × {doc.height:,} px · {doc.bits}-bit {doc.color_mode}\n"
-                                f"{len(doc.channels)} samples · {doc.samples.nbytes / 2**20:.1f} MiB raw")
+        self.update_dimensions()
         self.setWindowTitle(f"{doc.path.name}[*] — TIFview")
         self.setWindowModified(False)
-        self.channels.blockSignals(True)
-        self.channels.clear()
-        composite = QTreeWidgetItem(["Composite", doc.color_mode])
-        composite.setData(0, Qt.ItemDataRole.UserRole, -1)
-        self.channels.addTopLevelItem(composite)
-        for channel in doc.channels:
-            item = QTreeWidgetItem([doc.channel_label(channel.index), channel.kind])
-            item.setData(0, Qt.ItemDataRole.UserRole, channel.index)
-            item.setCheckState(0, Qt.CheckState.Checked if channel.index < doc.base_count or
-                               channel.kind == "Transparency" else Qt.CheckState.Unchecked)
-            sequence = doc.spot_sequence(channel.index)
-            spot_note = f"Spot sequence {sequence}\n" if sequence is not None else ""
-            item.setToolTip(0, f"{spot_note}Original name: {channel.name}\nStored sample {channel.index}\n{channel.evidence}")
-            item.setToolTip(1, channel.evidence)
-            plane = doc.display_samples[::max(1, doc.height // 80), ::max(1, doc.width // 120), channel.index]
-            gray = np.rint(plane.astype(np.float32) / doc.maximum * 255).astype(np.uint8)
-            if (doc.color_mode == "CMYK" and channel.index < doc.base_count) or (
-                    doc.color_mode == "WhiteIsZero" and channel.index == 0):
-                gray = 255 - gray
-            gray = np.ascontiguousarray(gray)
-            thumbnail = QImage(gray.data, gray.shape[1], gray.shape[0], gray.strides[0],
-                               QImage.Format.Format_Grayscale8).copy()
-            item.setIcon(0, QIcon(QPixmap.fromImage(thumbnail).scaled(
-                40, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)))
-            self.channels.addTopLevelItem(item)
-        self.channels.setCurrentItem(composite)
-        self.channels.blockSignals(False)
+        self.rebuild_channels()
         self.invert.blockSignals(True)
         self.invert.setChecked(False)
         self.invert.blockSignals(False)
@@ -557,6 +599,149 @@ class ViewerWindow(QMainWindow):
             self.style_combo.setCurrentIndex(0)
         self.drawing_style_changed()
 
+    def update_dimensions(self):
+        doc = self.doc
+        self.dimensions.setText(f"{doc.width:,} × {doc.height:,} px · {doc.bits}-bit {doc.color_mode}\n"
+                                f"{len(doc.channels)} samples · {doc.samples.nbytes / 2**20:.1f} MiB raw")
+
+    def selected_channel_id(self):
+        item = self.channels.currentItem()
+        return item.data(0, CHANNEL_ID_ROLE) if item else None
+
+    def remember_channel_preferences(self):
+        for row in range(1, self.channels.topLevelItemCount()):
+            item = self.channels.topLevelItem(row)
+            identity = item.data(0, CHANNEL_ID_ROLE)
+            index = item.data(0, Qt.ItemDataRole.UserRole)
+            self._channel_preferences[identity] = (
+                item.checkState(0) == Qt.CheckState.Checked, self.colors.get(index))
+
+    def rebuild_channels(self, selected_id=None):
+        """Keep view choices attached to logical channels rather than sample slots."""
+        doc = self.doc
+        self.channels.blockSignals(True)
+        try:
+            self.channels.clear()
+            composite = QTreeWidgetItem(["Composite", doc.color_mode])
+            composite.setData(0, Qt.ItemDataRole.UserRole, -1)
+            self.channels.addTopLevelItem(composite)
+            chosen = composite
+            colors = {}
+            for channel, identity in zip(doc.channels, self.edits.channel_ids):
+                default_checked = channel.index < doc.base_count or channel.kind == "Transparency"
+                checked, color = self._channel_preferences.get(identity, (default_checked, None))
+                if color is not None:
+                    colors[channel.index] = color
+                item = QTreeWidgetItem([doc.channel_label(channel.index), channel.kind])
+                item.setData(0, Qt.ItemDataRole.UserRole, channel.index)
+                item.setData(0, CHANNEL_ID_ROLE, identity)
+                item.setCheckState(0, Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+                sequence = doc.spot_sequence(channel.index)
+                spot_note = f"Spot sequence {sequence}\n" if sequence is not None else ""
+                item.setToolTip(0, f"{spot_note}TIFF name: {channel.name}\nStored sample {channel.index}\n{channel.evidence}")
+                item.setToolTip(1, channel.evidence)
+                self.channels.addTopLevelItem(item)
+                if identity == selected_id:
+                    chosen = item
+            self.colors = colors
+            self.channels.setCurrentItem(chosen)
+            self._refresh_thumbnails()
+        finally:
+            self.channels.blockSignals(False)
+
+    def spot_edit_allowed(self):
+        return (self.edits is not None and self.doc.bits in (8, 16) and self.doc.color_mode != "Palette"
+                and self.loader is None and self.saver is None and self.previewer is None)
+
+    def selected_spot(self):
+        index = self.selected_index()
+        return index if self.doc and index is not None and self.doc.channels[index].kind == "Spot" else None
+
+    def show_spot_menu(self, position):
+        item = self.channels.itemAt(position)
+        if item is not None:
+            self.channels.setCurrentItem(item)
+        menu = QMenu(self)
+        menu.addActions(self.spot_menu.actions())
+        menu.exec(self.channels.viewport().mapToGlobal(position))
+
+    def perform_spot_change(self, operation, *args, select_result=False):
+        if not self.spot_edit_allowed():
+            return False
+        try:
+            result = getattr(self.edits, operation)(*args)
+            if result is False:
+                return False
+            identity = self.edits.channel_ids[result] if select_result else None
+            if select_result and identity != self.selected_channel_id():
+                self.invert.blockSignals(True)
+                self.invert.setChecked(False)
+                self.invert.blockSignals(False)
+            self.edits_changed(identity)
+            self.statusBar().showMessage("Spot channels changed · Ctrl+Z: undo · Save TIFF copy to keep changes")
+            return result
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not change spot channels", str(exc))
+            return False
+
+    def new_spot(self):
+        if not self.spot_edit_allowed():
+            return
+        existing = {channel.name.casefold() for channel in self.doc.channels}
+        number = 1
+        while f"Spot {number}".casefold() in existing:
+            number += 1
+        dialog = SpotDialog("New spot channel", f"Spot {number}", note=
+                            "Creates an empty mask: white in grayscale means no ink. Paint the new channel to add ink.", parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.perform_spot_change("add_spot", *dialog.values(), select_result=True)
+
+    def duplicate_spot(self):
+        index = self.selected_spot()
+        if not self.spot_edit_allowed() or index is None:
+            return
+        channel = self.doc.channels[index]
+        dialog = SpotDialog("Duplicate spot channel", channel.name + " copy", channel.color,
+                            channel.display.opacity if channel.display else 100,
+                            "Copies every native mask pixel from the selected spot channel.", self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            name, color, solidity = dialog.values()
+            self.perform_spot_change("add_spot", name, color if color != channel.color else None,
+                                     solidity if channel.display is None or solidity != channel.display.opacity else None,
+                                     index, select_result=True)
+
+    def spot_properties(self):
+        index = self.selected_spot()
+        if not self.spot_edit_allowed() or index is None:
+            return
+        channel = self.doc.channels[index]
+        dialog = SpotDialog("Spot channel properties", channel.name, channel.color,
+                            channel.display.opacity if channel.display else 100,
+                            "Changes the name and saved preview properties. The mask pixels stay unchanged.", self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            name, color, solidity = dialog.values()
+            self.perform_spot_change("update_spot", index, name, color if color != channel.color else None,
+                                     solidity if channel.display is None or solidity != channel.display.opacity else None)
+
+    def delete_spot(self):
+        index = self.selected_spot()
+        if not self.spot_edit_allowed() or index is None:
+            return
+        answer = QMessageBox.question(self, "Delete spot channel", f"Delete {self.doc.channel_label(index)} and its mask pixels?\n"
+                                      "You can undo this change. The source file stays unchanged.",
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                                      QMessageBox.StandardButton.Cancel)
+        if answer == QMessageBox.StandardButton.Yes:
+            self.perform_spot_change("delete_spot", index)
+
+    def move_spot(self, direction):
+        index = self.selected_spot()
+        if not self.spot_edit_allowed() or index is None:
+            return
+        target = self.doc.spot_sequence(index) + direction
+        if 1 <= target <= sum(channel.kind == "Spot" for channel in self.doc.channels):
+            self.perform_spot_change("move_spot", index, target, select_result=True)
+
     def display_style_changed(self, index):
         if index == 1:
             self.tool_combo.setCurrentIndex(0)
@@ -584,15 +769,18 @@ class ViewerWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Could not paint channel", str(exc))
 
-    def edits_changed(self):
+    def edits_changed(self, selected_id=None):
+        selected_id = self.selected_channel_id() if selected_id is None else selected_id
+        self.remember_channel_preferences()
         self.doc = self.edits.document
         self._preview_version += 1
         self.preview_cache.clear()
         self._displayed_preview = None
         self.setWindowModified(self.edits.dirty)
+        self.rebuild_channels(selected_id)
+        self.update_dimensions()
         self.set_controls()
         self.refresh()
-        self.refresh_thumbnails()
 
     def refresh_thumbnails(self):
         self.channels.blockSignals(True)
@@ -625,7 +813,7 @@ class ViewerWindow(QMainWindow):
     def confirm_discard(self):
         if not self.edits or not self.edits.dirty:
             return True
-        answer = QMessageBox.question(self, "Unsaved channel edits", "Discard unsaved pixel edits? The original source file is unchanged.",
+        answer = QMessageBox.question(self, "Unsaved channel edits", "Discard unsaved channel and pixel edits? The original source file is unchanged.",
                                       QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
                                       QMessageBox.StandardButton.Cancel)
         return answer == QMessageBox.StandardButton.Discard
@@ -680,6 +868,16 @@ class ViewerWindow(QMainWindow):
         busy = self.loader is not None or self.saver is not None
         rendering = self.previewer is not None
         editable = self.doc is not None and self.doc.bits in (8, 16) and self.doc.color_mode != "Palette"
+        spot_editable = editable and not busy and not rendering
+        spot = self.selected_spot()
+        sequence = self.doc.spot_sequence(spot) if spot is not None else None
+        spot_count = sum(c.kind == "Spot" for c in self.doc.channels) if self.doc else 0
+        self.new_spot_action.setEnabled(spot_editable)
+        self.duplicate_spot_action.setEnabled(spot_editable and spot is not None)
+        self.spot_properties_action.setEnabled(spot_editable and spot is not None)
+        self.delete_spot_action.setEnabled(spot_editable and spot is not None)
+        self.move_spot_up_action.setEnabled(spot_editable and spot is not None and sequence > 1)
+        self.move_spot_down_action.setEnabled(spot_editable and spot is not None and sequence < spot_count)
         self.open_action.setEnabled(not busy and not rendering)
         self.save_action.setEnabled(editable and not busy and not rendering)
         self.undo_action.setEnabled(bool(self.edits and self.edits.can_undo and not busy and not rendering))

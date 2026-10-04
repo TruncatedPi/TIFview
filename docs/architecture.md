@@ -114,7 +114,8 @@ The writer uses unsigned 8/16-bit native samples with LZW, horizontal prediction
 interleaved storage, little-endian byte order and classic TIFF. It retains the
 source orientation, ICC, print resolution, transparency types, channel resource
 blocks, XMP/IPTC and attribution tags. Photoshop thumbnail caches (1033/1036)
-are dropped after pixel changes; other resource blocks are copied verbatim.
+are dropped after pixel changes; other resource blocks are copied verbatim for
+pixel-only edits. Spot layout/properties changes rewrite the linked records below.
 Pyramid reductions average 2x2 native samples and are rebuilt with corresponding
 reduced DPI. Additional independent pages are rejected rather than discarded.
 
@@ -136,6 +137,46 @@ edits and leave an existing destination intact. These checks establish internal
 round-trip integrity, not independent Photoshop or RIP compatibility. The user
 subsequently confirmed the v0.2.0 workflow works in Photoshop and PrintExp for
 the Refinecolor 6090; v0.2.1 leaves the TIFF writer/editing path intact.
+
+## Spot-channel layout changes
+
+`spots.py` returns immutable documents for new/duplicate/delete/move/properties.
+Reorder permutes only spot slots; deleting a spot shifts later sample positions
+while logical identities keep transparency and alpha masks attached to their
+original data. Native unsigned 8/16-bit samples, stored orientation and base
+process planes are retained. New masks contain maximum sample values (no ink).
+Stable edit-session identities retain channel selection, visibility and display
+colour overrides. Added/duplicated spots have new source identities.
+
+Structural history stores metadata snapshots, permutations and one added/deleted
+plane; it shares the 128 MiB limit with raster patches. It stores no full-image
+snapshots. Undo/redo restores original resource bytes, channel properties, pixels
+and save checkpoints exactly, including mixed structural and pixel operations.
+
+Resource rewriting preserves unrelated raw blocks and their names/padding.
+1006/1045 names and 1007/1077 display records are rebuilt consistently. Unicode
+lengths count UTF-16 code units. ExtraSamples is remapped with each plane.
+1053 IDs are raw big-endian uint32 arrays in both supplied TIFFs and the
+[psd-tools implementation](https://github.com/psd-tools/psd-tools/blob/main/src/psd_tools/psd/image_resources.py).
+Retained IDs move with their channels; new/duplicated spots get distinct nonzero
+IDs, and 1044's shared document seed advances monotonically. 1067 alternate spot
+colours are matched by ID, duplicated/filtered as necessary; changing a spot's
+preview colour drops its stale alternate. Photoshop thumbnails are removed.
+
+1043 in both supplied files has a v6 uint16 version/count header and 18-byte
+halftone records (`>IHihIBB`). Supported records move/copy with their spots;
+new masks use the observed Photoshop default. This observed layout differs from
+the abbreviated Adobe table. Unsupported/custom shapes, trailing data and count
+mismatches are rejected. Quick Mask references and ambiguous channel mappings
+also block structural changes. Generic opaque print descriptors remain verbatim.
+
+The writer maps process/transparency planes by original identity before deciding
+whether layers remain consistent. On spot count/order changes, `layercheck.py`
+scans bounded 37724 headers without decoding pixels or opaque tagged payloads.
+It rejects embedded extra-channel pixels, Alph blocks, additional-channel
+restrictions/blending ranges and malformed/unsupported framing. Supported
+layer bytes are copied verbatim. Both supplied blocks pass this check.
+These internal checks do not establish a new Photoshop/PrintExp round trip.
 
 ## Large-image previews
 

@@ -1,21 +1,25 @@
-Faster large-file channel viewing and spot-sequence labels.
+Create, delete, reorder and duplicate Photoshop spot channels.
 
 Download the **TIFview Windows x64 ZIP**, extract the entire archive, and run
 **TIFview/TIFview.exe**. Python is included. Keep the `_internal` folder alongside
 the executable. `setup.cmd` in the source ZIP automates download and setup.
 
-- Direct grayscale display removes full-image float/RGB expansion when selecting channels.
-- A bounded preview cache accelerates revisiting channels/composite views; irrelevant
-  checkbox/display changes no longer regenerate grayscale.
-- Large colour previews run in cancellable background jobs with much lower temporary
-  memory. Fitted views use a screen-sized preview; 100%/wheel zoom requests full resolution.
-- Spot labels have a 1-based ordinal among spots, e.g. `1. White Ink`, `2. Varnish`.
-  TIFF names, order and native pixels are unchanged.
-- Regression checks cover 16-bit grayscale values, exact banded colour previews,
-  stale-result cancellation, cache invalidation after editing and file-load races.
+- Use the **Spots** menu or right-click a channel row. New spots start empty
+  (white/no ink); duplication copies every native mask pixel.
+- Move spots up/down to change the saved relative ink sequence. Numbered labels,
+  names, pixels and Photoshop channel records stay together. Process,
+  transparency and saved alpha channels are protected.
+- Spot properties edit the name, saved preview colour and solidity. These are
+  separate from temporary overlay controls and do not set printer ink density.
+- Undo/redo covers channel operations and painting together, with bounded history.
+- TIFF copies retain native 8/16-bit data, channel IDs/types/colours, ICC, DPI,
+  transparency and a rebuilt pyramid using the existing LZW/interleaved/IBM-PC preset.
+- Layer retention checks reject additional-channel dependencies rather than
+  copying inconsistent layer data. Supported layer bytes remain untouched.
+- Quick Mask, unknown channel mapping and unsupported/custom halftones block
+  structural changes with an explanation.
 
-The user reports that v0.2.0 edited files work in Photoshop and PrintExp for the
-Refinecolor 6090, and installation succeeds on another PC. This update retains
-that TIFF writer and pixel-editing path. Shapes/text, undo/redo and saving copies
-with retained spot metadata/layers remain available. Full native arrays are still
-loaded into RAM; very large files beyond the current limits need tiled loading.
+Automated and sample TIFF read-back tests verify the new channel layout and
+preserved pixels/metadata. **Creation/deletion/reordering still need a new user
+round-trip check in Photoshop and PrintExp.** The previously confirmed pixel-edit
+workflow remains available, along with fast channel previews, pan and zoom.

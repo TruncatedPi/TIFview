@@ -22,14 +22,73 @@ class SaveOptions:
     pyramid: bool = True
 
 
+def channel_sources(original: ImageDocument, edited: ImageDocument) -> list[int | None]:
+    sources = edited.metadata.get("channel_source_indices")
+    if sources is None:
+        if len(edited.channels) != len(original.channels):
+            raise ValueError("Use spot channel management to change the channel layout")
+        sources = list(range(len(original.channels)))
+    if len(sources) != len(edited.channels) or any(
+            source is not None and (not isinstance(source, int) or not 0 <= source < len(original.channels))
+            for source in sources):
+        raise ValueError("Invalid channel source identities")
+    return list(sources)
+
+
+def _validate_channel_layout(original: ImageDocument, edited: ImageDocument):
+    if (edited.samples.shape[:2] != original.samples.shape[:2] or edited.bits != original.bits or
+            edited.samples.dtype != original.samples.dtype or edited.orientation != original.orientation or
+            edited.color_mode != original.color_mode or edited.base_count != original.base_count):
+        raise ValueError("Image dimensions, bit depth, orientation and colour mode must remain unchanged")
+    if len(edited.channels) != edited.samples.shape[-1] or any(c.index != i for i, c in enumerate(edited.channels)):
+        raise ValueError("Channel metadata does not match the sample planes")
+    sources = channel_sources(original, edited)
+    for before in original.channels:
+        if before.kind == "Spot":
+            continue
+        matches = [i for i, source in enumerate(sources) if source == before.index]
+        if len(matches) != 1:
+            raise ValueError("Process, transparency and saved alpha channels cannot be created, deleted or duplicated")
+        after = edited.channels[matches[0]]
+        if (after.name, after.kind, after.display, after.associated) != (
+                before.name, before.kind, before.display, before.associated):
+            raise ValueError("Only spot channel properties can be changed")
+        if before.index < original.base_count and matches[0] != before.index:
+            raise ValueError("Process channels must retain their original order")
+    for channel, source in zip(edited.channels, sources):
+        if source is None and channel.kind != "Spot":
+            raise ValueError("Only spot channels can be added")
+        if source is not None and original.channels[source].kind == "Spot" and channel.kind != "Spot":
+            raise ValueError("Spot channel types must remain intact")
+    retained = [source for source in sources if source is not None]
+    if len(set(retained)) != len(retained):
+        raise ValueError("Duplicated spots require their own channel identity")
+    locked = [c.index for c in original.channels if c.kind != "Spot"]
+    if [source for source in sources if source in locked] != locked:
+        raise ValueError("Process, transparency and saved alpha channels must retain their relative order")
+    return sources
+
+
 def layer_preservation_reason(original: ImageDocument, edited: ImageDocument) -> str | None:
     if not original.metadata.get("has_photoshop_layers"):
         return None
     if original.metadata.get("byte_order") != "IBM PC (little endian)":
         return "Preserving Macintosh-byte-order layer blocks in an IBM-PC TIFF is not implemented."
+    try:
+        sources = _validate_channel_layout(original, edited)
+    except ValueError as exc:
+        return str(exc)
     protected = list(range(original.base_count)) + [c.index for c in original.channels if c.kind == "Transparency"]
-    if any(not np.array_equal(original.samples[..., index], edited.samples[..., index]) for index in protected):
+    if any(not np.array_equal(original.samples[..., index], edited.samples[..., sources.index(index)]) for index in protected):
         return "CMYK/RGB or transparency pixels changed. The original Photoshop layers still contain the old image."
+    if sources != list(range(len(original.channels))):
+        from .layercheck import spot_structure_layer_reason
+        cached_key = "spot_structure_layer_check"
+        if cached_key not in original.metadata:
+            with tifffile.TiffFile(original.path, mode="r") as tif:
+                data = bytes(tif.pages[0].tags[37724].value)
+            original.metadata[cached_key] = spot_structure_layer_reason(data, original.base_count)
+        return original.metadata[cached_key]
     return None
 
 
@@ -57,8 +116,7 @@ def save_tiff_copy(original: ImageDocument, edited: ImageDocument, filename: str
         raise ValueError("Choose a .tif or .tiff filename")
     if destination.exists() and not overwrite:
         raise FileExistsError(f"{destination.name} already exists")
-    if edited.samples.shape != original.samples.shape or edited.bits != original.bits:
-        raise ValueError("Image dimensions, channel count and bit depth must remain unchanged")
+    _validate_channel_layout(original, edited)
     if edited.bits not in (8, 16) or edited.color_mode not in ("RGB", "CMYK", "Gray", "WhiteIsZero"):
         raise ValueError("TIFF export supports unsigned 8/16-bit RGB, CMYK and grayscale images")
     signature = original.metadata.get("source_signature")
@@ -114,12 +172,14 @@ def save_tiff_copy(original: ImageDocument, edited: ImageDocument, filename: str
     temporary = Path(temporary)
     try:
         with tifffile.TiffWriter(temporary, byteorder="<", bigtiff=False) as tif:
-            tif.write(edited.samples, subifds=len(reduced) or None, extratags=extra_tags,
+            primary = edited.samples[..., 0] if edited.samples.shape[-1] == 1 else edited.samples
+            tif.write(primary, subifds=len(reduced) or None, extratags=extra_tags,
                       iccprofile=edited.icc_profile, resolution=resolution, resolutionunit=unit,
                       software=f"TIFview {__version__}", datetime=True, **common)
             for index, data in enumerate(reduced, 1):
                 reduced_resolution = tuple((v[0], v[1] * 2**index) for v in resolution)
-                tif.write(data, subfiletype=1, resolution=reduced_resolution, resolutionunit=unit,
+                pixels = data[..., 0] if data.shape[-1] == 1 else data
+                tif.write(pixels, subfiletype=1, resolution=reduced_resolution, resolutionunit=unit,
                           extratags=[(274, 3, 1, edited.orientation, False)], **common)
         reopened = load_image(temporary)
         if (reopened.bits, reopened.color_mode, reopened.orientation, reopened.samples.dtype) != (
@@ -145,7 +205,9 @@ def save_tiff_copy(original: ImageDocument, edited: ImageDocument, filename: str
             if len(page.subifds or ()) != len(reduced):
                 raise ValueError("Saved image pyramid is incomplete")
             for child, expected in zip(page.pages or (), reduced):
-                if not np.array_equal(child.asarray(), expected):
+                if (child.imagelength, child.imagewidth, child.samplesperpixel) != expected.shape:
+                    raise ValueError("Saved image pyramid dimensions changed")
+                if not np.array_equal(child.asarray().reshape(expected.shape), expected):
                     raise ValueError("Saved image pyramid did not pass read-back verification")
         if signature is not None and file_signature(source) != signature:
             raise ValueError("The original file changed while saving. Reopen it and retry.")

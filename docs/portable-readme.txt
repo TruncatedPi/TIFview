@@ -23,14 +23,23 @@ Save uses LZW, interleaved samples, IBM-PC byte order, transparency and a pyrami
 Spot/saved-mask edits can retain original Photoshop layers. Process/transparency
 edits require a merged copy without layers; review the save dialog.
 
-Spot labels show their relative order, e.g. 1. White Ink, 2. Varnish. Saved names
-and channel order are unchanged. Large fitted colour previews render in the
+Use the Spots menu or right-click a channel to create, duplicate, rename/change
+properties, move up/down or delete spots. A new mask is empty (white/no ink).
+Changes support undo/redo and Save TIFF copy. Reordering changes the saved ink
+sequence; masks/names/metadata move together. Process/transparency/alpha channels
+are protected. Saved preview colour/solidity do not set printer ink density.
+Check the numbered order in Photoshop and PrintExp before using a changed copy.
+
+Spot labels show their relative order, e.g. 1. White Ink, 2. Varnish. Large fitted colour previews render in the
 background at screen size; use 100% or wheel zoom for full resolution.
 Grayscale channels always show full source pixels. Recent previews are cached.
 
-Edited TIFFs have been tested by the user in Photoshop and PrintExp for the
-Refinecolor 6090; the portable app also works on another PC. Reference
-annotation sidecars and PNG/PDF exports are planned. See README.md and
+Pixel-edited TIFFs have been tested by the user in Photoshop and PrintExp for the
+Refinecolor 6090; the portable app also works on another PC.
+The new spot count/order/property workflow has internal read-back checks and
+still needs a Photoshop/PrintExp round-trip check. Unsupported channel-linked
+metadata is rejected; some layered structures require a merged copy.
+Reference annotation sidecars and PNG/PDF exports are planned. See README.md and
 docs/validation.md for verified behavior and limitations.
 
 Source, updates and issue reports: https://github.com/TruncatedPi/TIFview

@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import time
+import traceback
 
 import numpy as np
 import tifffile
@@ -98,11 +99,34 @@ def run(image_path: str, report_path: str) -> int:
             np.testing.assert_array_equal(displayed[..., 0], window.doc.samples[..., 3])
             np.testing.assert_array_equal(window.doc.samples[..., [0, 1, 2, 4, 5]], doc.samples[..., [0, 1, 2, 4, 5]])
             assert window.edits.dirty
+            painted_samples = window.doc.samples.copy()
+            assert window.perform_spot_change("add_spot", "Empty ink", (255, 255, 255), 100, select_result=True) == 6
+            assert window.view.image_item.pixmap().toImage().pixelColor(370, 85).red() == 255
+            assert window.perform_spot_change("add_spot", "White copy", None, None, 3, select_result=True) == 7
+            np.testing.assert_array_equal(window.doc.samples[..., 7], painted_samples[..., 3])
+            assert window.perform_spot_change("move_spot", 7, 1, select_result=True) == 3
+            window.perform_spot_change("update_spot", 3, "Proof white", None, 12)
+            window.perform_spot_change("delete_spot", 6)  # Varnish after the reorder.
+            changed_samples = window.doc.samples.copy()
+            changed_channels = window.doc.channels.copy()
+            changed_resources = window.doc.photoshop_resources
+            assert [c.name for c in changed_channels[3:]] == [
+                "Proof white", "White Ink", "Saved selection", "Empty ink"]
+            assert window.channels.topLevelItem(4).text(0) == "1. Proof white"
+            for _ in range(5):
+                window.undo()
+            np.testing.assert_array_equal(window.doc.samples, painted_samples)
+            assert window.doc.channels == doc.channels
+            for _ in range(5):
+                window.redo()
+            np.testing.assert_array_equal(window.doc.samples, changed_samples)
+            assert window.doc.channels == changed_channels
+            assert window.doc.photoshop_resources == changed_resources
             save_tiff_copy(doc, window.doc, edited_path)
             reopened = load_image(edited_path)
             np.testing.assert_array_equal(reopened.samples, window.doc.samples)
             assert reopened.icc_profile == doc.icc_profile
-            assert reopened.photoshop_resources == doc.photoshop_resources
+            assert reopened.photoshop_resources == window.doc.photoshop_resources
             with tifffile.TiffFile(source) as original, tifffile.TiffFile(edited_path) as saved:
                 assert saved.pages[0].tags[37724].value == original.pages[0].tags[37724].value
                 assert len(saved.pages[0].subifds) == 1
@@ -113,7 +137,9 @@ def run(image_path: str, report_path: str) -> int:
             # file without making every portable build decode a huge fixture.
             gui.ASYNC_PREVIEW_PIXELS = 0
             window.preview_cache.clear()
+            window._displayed_preview = None
             window.channels.setCurrentItem(window.channels.topLevelItem(0))
+            window.refresh()
             assert window.previewer is not None
             assert not window.save_action.isEnabled()
             window.channels.topLevelItem(1).setCheckState(0, Qt.CheckState.Unchecked)
@@ -139,10 +165,11 @@ def run(image_path: str, report_path: str) -> int:
                           checks=["LZW decoding", "Photoshop names and types", "Qt channel pixels",
                                   "spot sequence labels", "background previews and stale-result cancellation",
                                   "actual pixels, zoom and fit", "ellipse, box, line and text pixels",
+                                  "create, duplicate, reorder, properties and delete spots", "exact structural undo and redo",
                                   "exact undo and redo", "TIFF save and reopen", "opaque RLE layers and ICC",
                                   "rebuilt image pyramid", "untouched source"])
         except Exception as exc:
-            result.update(passed=False, error=f"{type(exc).__name__}: {exc}")
+            result.update(passed=False, error=traceback.format_exc())
         if window.previewer is not None:
             window._pending_preview = None
             window.previewer.requestInterruption()

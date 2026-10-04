@@ -35,7 +35,7 @@ the other spots; click **Composite** to return to the colour image.
 **Windows 10/11, 64-bit (x64). Python is included in the portable download.**
 
 1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
-2. Download **TIFview-0.2.1-windows-x64.zip** and extract the entire ZIP.
+2. Download **TIFview-0.3.0-windows-x64.zip** and extract the entire ZIP.
 3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
 
 Keep the `_internal` folder with the executable. No Python installation, Git,
@@ -99,6 +99,31 @@ No virtual-environment activation is needed. For console diagnostics, run
 - **File details** shows decoding information, channel evidence, original preview
   colour components, saved solidity/opacity, and any interpretation warnings.
 
+## Manage spot channels
+
+Use the **Spots** menu, or right-click a channel row:
+
+- **New spot** appends a named empty mask: white means no ink. Paint into it to add ink.
+- **Duplicate spot** copies every native pixel from the selected spot into a separate channel.
+- **Spot properties** changes its name, saved preview colour and solidity. These properties
+  do not change mask pixels or set the printer's ink density. The sidebar overlay controls
+  remain temporary viewing settings.
+- **Move spot up/down** changes the relative spot sequence, including the stored TIFF
+  sample order. Names, masks and Photoshop records move together. Process, transparency
+  and saved-alpha channels keep their relative order.
+- **Delete spot** removes its mask after confirmation. Undo restores the channel and pixels.
+
+All operations support **Ctrl+Z/Ctrl+Y**, including when mixed with painting.
+Check the numbered spot list before **Save TIFF copy**: PrintExp uses its sequence.
+Structural undo stores added/deleted planes and small layout records rather than whole
+images. New channels still allocate native image memory and count toward the 512 MiB limit.
+Unknown channel mappings, Quick Mask references and unsupported custom spot halftones
+are rejected instead of silently attaching metadata to another ink.
+
+Creation/deletion/reordering are verified by TIFF read-back and automated tests.
+**Their new Photoshop/PrintExp workflow still needs a user round-trip check**; the
+previous pixel-editing workflow was tested successfully in those applications.
+
 ## Paint and save channel pixels
 
 1. Select a single channel, such as **w-back**. Composite is a viewing mode.
@@ -127,8 +152,11 @@ BigTIFF off. Native bit depth, channel names/types, spot preview colours/solidit
 ICC profile and print resolution are retained. Cached Photoshop thumbnails are
 removed after edits so they cannot show the old pixels; pyramid pixels are rebuilt.
 
-**Photoshop layers are retained for spot-channel and saved-alpha-mask edits**
-when the source uses IBM-PC byte order. The original layer block is copied
+**Photoshop layers can be retained for spot-channel and saved-alpha-mask edits**
+when the source uses IBM-PC byte order. Spot count/order changes also check the
+layer headers for additional channel dependencies. Both supplied TIFFs pass this
+check; unsupported or spot-dependent layer structures require a merged copy.
+The original layer block is copied
 verbatim, retaining its RLE/ZIP compression and unknown Photoshop layer data.
 The app does not edit or recompose these layers. If CMYK/RGB/grayscale process
 pixels or composite transparency change, the original layers would contain a
@@ -233,7 +261,8 @@ The main tradeoff is Python/Qt installation size and full-image RAM use versus
 fast development and a channel reader that can be tested independently.
 See [architecture and resource rules](docs/architecture.md).
 
-1. **Current:** channel inspection, ellipse/box/line/text raster edits, undo/redo,
+1. **Current:** channel inspection, spot creation/deletion/reordering/properties,
+   ellipse/box/line/text raster edits, undo/redo,
    verified TIFF-copy export and portable Windows packaging. Validate edited
    copies on more Photoshop/RIP configurations and collect more real save variants.
 2. **Planned:** layer-aware process editing and tiled loading beyond the current RAM limits.

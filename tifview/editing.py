@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import json
 import math
 
 import numpy as np
@@ -9,6 +10,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter, QPen
 
 from .model import ImageDocument, orient
+from . import spots
 
 
 @dataclass
@@ -23,6 +25,46 @@ class Patch:
     @property
     def bytes(self):
         return self.before.nbytes + self.after.nbytes
+
+
+@dataclass
+class Layout:
+    channels: tuple
+    resources: bytes | None
+    metadata: dict
+    warnings: tuple[str, ...]
+    channel_ids: tuple[int, ...]
+
+    @classmethod
+    def capture(cls, doc, channel_ids):
+        return cls(tuple(doc.channels), doc.photoshop_resources, dict(doc.metadata),
+                   tuple(doc.warnings), tuple(channel_ids))
+
+    @property
+    def bytes(self):
+        # Include metadata payloads as well as planes in the bounded history.
+        return ((len(self.resources) if self.resources else 0) +
+                len(json.dumps(self.metadata, default=str, ensure_ascii=False).encode("utf-8")) +
+                sum(len(c.name.encode("utf-8")) + 64 for c in self.channels) +
+                sum(len(w.encode("utf-8")) for w in self.warnings))
+
+
+@dataclass
+class StructuralPatch:
+    before: Layout
+    after: Layout
+    forward_order: tuple[int | None, ...] | None
+    reverse_order: tuple[int | None, ...] | None
+    added_plane: np.ndarray | None
+    deleted_plane: np.ndarray | None
+    previous_state: int
+    next_state: int
+
+    @property
+    def bytes(self):
+        return (self.before.bytes + self.after.bytes +
+                (0 if self.added_plane is None else self.added_plane.nbytes) +
+                (0 if self.deleted_plane is None else self.deleted_plane.nbytes))
 
 
 def raster_shape(tool: str, start: tuple[float, float], end: tuple[float, float],
@@ -90,10 +132,17 @@ class EditSession:
     def __init__(self, original: ImageDocument, history_limit: int = 128 * 2**20):
         self.original = self.document = original
         self._samples = None
-        self.history: list[Patch] = []
+        self.history: list[Patch | StructuralPatch] = []
         self.cursor = 0
         self.state = self.saved_state = self._sequence = 0
         self.history_limit = history_limit
+        self._channel_ids = tuple(range(len(original.channels)))
+        self._next_channel_id = len(self._channel_ids)
+
+    @property
+    def channel_ids(self):
+        """Logical identities survive channel moves, undo and redo."""
+        return self._channel_ids
 
     @property
     def dirty(self):
@@ -108,20 +157,110 @@ class EditSession:
         return self.cursor < len(self.history)
 
     def changed_channels(self):
-        if self._samples is None:
-            return set()
-        return {index for index in range(len(self.document.channels))
-                if not np.array_equal(self._samples[..., index], self.original.samples[..., index])}
+        doc = self.document
+        sources = doc.metadata.get("channel_source_indices", range(len(doc.channels)))
+        changed = set()
+        for index, source in enumerate(sources):
+            channel = doc.channels[index]
+            if source is None or not 0 <= source < len(self.original.channels):
+                changed.add(index)
+                continue
+            before = self.original.channels[source]
+            if (source != index or replace(channel, index=source) != before or
+                    not np.array_equal(doc.samples[..., index], self.original.samples[..., source])):
+                changed.add(index)
+        return changed
 
     def mark_saved(self):
         self.saved_state = self.state
 
     def _editable(self):
         if self._samples is None:
-            self._samples = self.original.samples.copy()
-            self.document = replace(self.original, samples=self._samples.view(),
-                                    metadata=dict(self.original.metadata), warnings=list(self.original.warnings))
-        return orient(self._samples, self.original.orientation)
+            self._samples = self.document.samples.copy()
+            self.document = replace(self.document, samples=self._samples.view(),
+                                    metadata=dict(self.document.metadata), warnings=list(self.document.warnings))
+        return orient(self._samples, self.document.orientation)
+
+    def _adopt(self, document, channel_ids):
+        # A metadata change can share our private writable backing array. Other
+        # changes replace the plane layout and copy only on the next pixel edit.
+        if self._samples is not None and not np.shares_memory(document.samples, self._samples):
+            self._samples = None
+        self.document = document
+        self._channel_ids = tuple(channel_ids)
+
+    def _push(self, patch):
+        if patch.bytes > self.history_limit:
+            raise ValueError("Change exceeds the 128 MiB undo limit")
+        del self.history[self.cursor:]
+        self.history.append(patch)
+        self.cursor += 1
+        while sum(p.bytes for p in self.history) > self.history_limit and len(self.history) > 1:
+            self.history.pop(0)
+            self.cursor -= 1
+
+    def _structure(self, document, channel_ids, forward_order=None, reverse_order=None,
+                   added_plane=None, deleted_plane=None):
+        before = Layout.capture(self.document, self.channel_ids)
+        after = Layout.capture(document, channel_ids)
+        self._sequence += 1
+        patch = StructuralPatch(before, after, forward_order, reverse_order,
+                                added_plane, deleted_plane, self.state, self._sequence)
+        self._push(patch)
+        self._adopt(document, channel_ids)
+        self.state = patch.next_state
+
+    def add_spot(self, name: str, color=None, solidity=None, source_index=None) -> int:
+        """Add an empty native mask or duplicate a spot, retaining exact undo."""
+        doc = self.document
+        plane_bytes = doc.samples[..., 0].nbytes
+        if plane_bytes > self.history_limit:
+            raise ValueError("Channel exceeds the 128 MiB undo limit")
+        result = spots.add_spot(doc, name, color, solidity, source_index)
+        index = len(doc.channels)
+        ids = (*self.channel_ids, self._next_channel_id)
+        forward = (*range(index), None)
+        reverse = tuple(range(index))
+        plane = result.samples[..., index].copy()
+        plane.flags.writeable = False
+        self._structure(result, ids, forward, reverse, added_plane=plane)
+        self._next_channel_id += 1
+        return index
+
+    def delete_spot(self, index: int) -> bool:
+        doc = self.document
+        result = spots.delete_spot(doc, index)
+        order = tuple(i for i in range(len(doc.channels)) if i != index)
+        reverse = tuple(None if i == index else i if i < index else i - 1
+                        for i in range(len(doc.channels)))
+        plane = doc.samples[..., index].copy()
+        plane.flags.writeable = False
+        self._structure(result, tuple(self.channel_ids[i] for i in order), order, reverse,
+                        deleted_plane=plane)
+        return True
+
+    def move_spot(self, index: int, target_sequence: int) -> int:
+        doc = self.document
+        result = spots.move_spot(doc, index, target_sequence)
+        if result is doc:
+            return index
+        slots = [c.index for c in doc.channels if c.kind == "Spot"]
+        moved = slots.copy()
+        moved.remove(index)
+        moved.insert(target_sequence - 1, index)
+        order = list(range(len(doc.channels)))
+        for slot, source in zip(slots, moved):
+            order[slot] = source
+        reverse = tuple(order.index(i) for i in range(len(order)))
+        self._structure(result, tuple(self.channel_ids[i] for i in order), tuple(order), reverse)
+        return slots[target_sequence - 1]
+
+    def update_spot(self, index: int, name: str, color=None, solidity=None) -> bool:
+        result = spots.update_spot(self.document, index, name, color, solidity)
+        if result is self.document:
+            return False
+        self._structure(result, self.channel_ids)
+        return True
 
     def apply(self, channel: int, bounds, coverage: np.ndarray, shade: int, invert: bool = False):
         doc = self.document
@@ -162,12 +301,7 @@ class EditSession:
             raise ValueError("Drawing exceeds the 128 MiB undo limit. Draw a smaller region.")
         self._sequence += 1
         patch = Patch(indices, bounds, before, after, self.state, self._sequence)
-        del self.history[self.cursor:]
-        self.history.append(patch)
-        self.cursor += 1
-        while sum(p.bytes for p in self.history) > self.history_limit and len(self.history) > 1:
-            self.history.pop(0)
-            self.cursor -= 1
+        self._push(patch)
         self._write(patch, after)
         self.state = patch.next_state
         return True
@@ -180,14 +314,28 @@ class EditSession:
 
     def undo(self):
         if self.can_undo:
+            patch = self.history[self.cursor - 1]
+            if isinstance(patch, StructuralPatch):
+                layout = patch.before
+                document = spots.restore_layout(self.document, layout.channels, layout.resources,
+                                                layout.metadata, patch.reverse_order, patch.deleted_plane,
+                                                layout.warnings)
+                self._adopt(document, layout.channel_ids)
+            else:
+                self._write(patch, patch.before)
             self.cursor -= 1
-            patch = self.history[self.cursor]
-            self._write(patch, patch.before)
             self.state = patch.previous_state
 
     def redo(self):
         if self.can_redo:
             patch = self.history[self.cursor]
-            self._write(patch, patch.after)
+            if isinstance(patch, StructuralPatch):
+                layout = patch.after
+                document = spots.restore_layout(self.document, layout.channels, layout.resources,
+                                                layout.metadata, patch.forward_order, patch.added_plane,
+                                                layout.warnings)
+                self._adopt(document, layout.channel_ids)
+            else:
+                self._write(patch, patch.after)
             self.cursor += 1
             self.state = patch.next_state

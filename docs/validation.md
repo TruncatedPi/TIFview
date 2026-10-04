@@ -132,6 +132,34 @@ needed to prove this copy's compatibility. Keep the existing spot names and
 compare original/edited files using the same PrintExp job settings.
 The internal read-back checks alone do not establish compatibility with every RIP/configuration.
 
+## Spot management (v0.3.0)
+
+Create/duplicate/delete/reorder/properties support native 8/16-bit channels and
+mixed pixel/structural undo/redo. The 203 local checks include channel IDs,
+alternate colours, halftones, Unicode names, alpha/transparency identity through
+index shifts, bounded history, GUI selection/visibility and layer dependencies.
+The portable executable check repeats the complete changed-layout save path.
+Plain grayscale/RGB/RGBA sources can gain a first spot, and deleting the last
+spot restores valid single-channel grayscale storage and pyramid dimensions.
+
+Two private sample copies are in ignored `validation/local/spot-management/`:
+
+- `Bailey-spot-reorder-test.tif`: spots are now `w-back`, `w-front`, `v-front`,
+  `v-all`. Each native plane and its Photoshop records follow that order.
+- `Lion-spot-duplicate-test.tif`: a copy of the native white mask is first,
+  followed by the original. A blank mask was also created and deleted to exercise
+  those operations. Structural history used about 42 MiB, without whole-image
+  history snapshots.
+
+Read-back verifies every output sample. Process/transparency/alpha pixels,
+ICC and opaque layer bytes stayed unchanged; both original file hashes stayed
+unchanged. The copies use LZW/interleaved/IBM-PC classic TIFF with rebuilt
+pyramids. **Independent Photoshop and PrintExp tests of these new channel
+layouts remain pending.** Existing pixel-edited TIFFs were previously confirmed
+by the user; that confirmation does not cover newly created/reordered spots.
+Open these copies in Photoshop, compare mask/name/sequence/solidity and layers,
+then check PrintExp's channel mapping using the same RIP job settings.
+
 ## Large-image performance update
 
 A user-supplied 112.8 MiB TIFF with 3189 × 4606 pixels (84 MiB native samples,
