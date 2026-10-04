@@ -121,7 +121,12 @@ RGB+spot fixture without a Python installation.
 the edited validation copy in Photoshop, compare w-back at 100%, inspect the
 other channels and original layers, and check channel options/solidity and
 360 dpi. Then import that same copy into the target RIP and verify spot mapping,
-resolution and the edited mask. The RIP name/version has not been supplied.
+resolution and the edited mask. The user identified the target as **PrintExp
+(Hosonsoft) for the Refinecolor 6090**; the installed PrintExp version is still
+unknown. The [manufacturer's 6090 specification](https://www.refinecolor.com/refinecolor-6090-a1-uv-flatbed-printer-optional-ccd-visual-positioning-system.html)
+lists PrintExp and CMYK+W+V, but does not document the TIFF/channel export details
+needed to prove this copy's compatibility. Keep the existing spot names and
+compare original/edited files using the same PrintExp job settings.
 The internal read-back checks alone do not establish production compatibility.
 
 Reference annotation objects, sidecars and annotated PNG/PDF export remain
