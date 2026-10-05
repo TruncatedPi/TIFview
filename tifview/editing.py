@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import json
 import math
+import zlib
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -69,10 +70,37 @@ class StructuralPatch:
 
 
 @dataclass
+class LayerDelta:
+    """Lossless, self-inverse native pixel differences in bounded row bands."""
+    channel_indices: tuple[int, ...]
+    bounds: tuple[int, int, int, int]
+    bands: tuple[tuple[int, bytes], ...]
+
+    @property
+    def bytes(self):
+        return 72 + sum(len(data) + 32 for _, data in self.bands)
+
+    @classmethod
+    def capture(cls, old, new, indices, bounds, budget):
+        x0, y0, x1, y1 = bounds
+        rows = max(1, 2**20 // ((x1 - x0) * len(indices) * old.dtype.itemsize))
+        bands, used = [], 72
+        for start in range(y0, y1, rows):
+            stop = min(y1, start + rows)
+            delta = np.bitwise_xor(old[start:stop, x0:x1, indices], new[start:stop, x0:x1, indices])
+            encoded = zlib.compress(delta.tobytes(), level=1)
+            used += len(encoded) + 32
+            if used > budget:
+                raise ValueError("Layer change exceeds the 128 MiB undo limit")
+            bands.append((stop - start, encoded))
+        return cls(indices, bounds, tuple(bands))
+
+
+@dataclass
 class LayerPatch:
     before: Layout
     after: Layout
-    pixels: Patch | None
+    pixels: LayerDelta | None
     added_plane: np.ndarray | None
     previous_state: int
     next_state: int
@@ -318,19 +346,14 @@ class EditSession:
         ids = (*self.channel_ids, self._next_channel_id) if added else self.channel_ids
         before_layout, after_layout = Layout.capture(doc, self.channel_ids), Layout.capture(result, ids)
         required = before_layout.bytes + after_layout.bytes + (result.samples[..., -1].nbytes if added else 0)
+        if required > self.history_limit:
+            raise ValueError("Layer change exceeds the 128 MiB undo limit")
         if np.any(difference):
             ys = np.flatnonzero(np.any(difference, axis=1))
             xs = np.flatnonzero(np.any(difference, axis=0))
             x0, y0, x1, y1 = int(xs[0]), int(ys[0]), int(xs[-1]) + 1, int(ys[-1]) + 1
-            required += 2 * (x1 - x0) * (y1 - y0) * len(indices) * doc.samples.dtype.itemsize
-            if required > self.history_limit:
-                raise ValueError("Layer change exceeds the 128 MiB undo limit")
-            before = old[y0:y1, x0:x1, indices].copy()
-            after = new[y0:y1, x0:x1, indices].copy()
-            before.flags.writeable = after.flags.writeable = False
-            pixel_patch = Patch(indices, (x0, y0, x1, y1), before, after, self.state, self._sequence + 1)
-        elif required > self.history_limit:
-            raise ValueError("Layer change exceeds the 128 MiB undo limit")
+            pixel_patch = LayerDelta.capture(old, new, indices, (x0, y0, x1, y1),
+                                            self.history_limit - required)
         plane = result.samples[..., -1].copy() if added else None
         if plane is not None:
             plane.flags.writeable = False
@@ -464,7 +487,7 @@ class EditSession:
                                         layout.warnings)
         self._adopt(replace(document, layer_state=layout.layer_state), layout.channel_ids)
         if patch.pixels is not None:
-            self._write(patch.pixels, patch.pixels.after if forward else patch.pixels.before)
+            self._toggle_layer_delta(patch.pixels)
         if self.document.metadata.get("layer_composite_applied"):
             self.document = replace(self.document, layer_merged_samples=self.document.samples,
                                     layer_merged_transparency=next((c.index for c in self.document.channels
@@ -474,3 +497,14 @@ class EditSession:
             self._samples = None
         else:
             self.document = replace(self.document, layer_merged_samples=None, layer_merged_transparency=None)
+
+    def _toggle_layer_delta(self, delta: LayerDelta):
+        x0, y0, x1, _ = delta.bounds
+        pixels = self._editable()
+        for rows, encoded in delta.bands:
+            values = np.frombuffer(zlib.decompress(encoded), dtype=pixels.dtype)
+            values = values.reshape(rows, x1 - x0, len(delta.channel_indices))
+            region = pixels[y0:y0 + rows, x0:x1]
+            for position, channel in enumerate(delta.channel_indices):
+                np.bitwise_xor(region[..., channel], values[..., position], out=region[..., channel])
+            y0 += rows

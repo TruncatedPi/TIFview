@@ -269,6 +269,55 @@ def test_layer_history_limit_rejection_is_atomic_and_new_branch_has_fresh_alpha_
     assert not reference.can_redo
 
 
+@pytest.mark.parametrize("depth", [8, 16])
+@pytest.mark.parametrize("orientation", [1, 6])
+def test_large_layer_change_fits_compressed_history_and_restores_every_native_channel(depth, orientation):
+    class LargeStack(Stack):
+        def composite_samples(self, order, visible):
+            result = np.zeros((*self.shape, 5), dtype=f"uint{depth}")
+            maximum = 2**depth - 1
+            result[..., 0] = maximum if 0 in visible else 0
+            result[..., 3] = maximum // 3 if 1 in visible else 0
+            result[..., -1] = maximum if visible else 0
+            return result
+
+    stack = LargeStack(shape=(513, 1025), depth=depth, base=4)
+    initial = stack.composite_samples(stack.default_order, stack.default_visible)
+    channels = [Channel(i, str(i), "Process", "test", (120, 120, 120)) for i in range(4)]
+    channels += [Channel(4, "Transparency", "Transparency", "test", (130, 130, 130)),
+                 Channel(5, "White", "Spot", "test", (255, 255, 255))]
+    spot = np.full((*stack.shape, 1), 123 * (257 if depth == 16 else 1), initial.dtype)
+    original = ImageDocument(None, np.concatenate((initial, spot), axis=-1), channels,
+                             "CMYK", 4, depth, orientation, metadata={"extra_samples": [2, 0]})
+    session = EditSession(original, history_limit=128 * 1024)
+    session.attach_layers(stack)
+    # The old before/after rectangle would exceed this history budget many
+    # times over. Native lossless differences must span multiple row bands.
+    assert initial.nbytes * 2 > session.history_limit
+    assert session.set_layer_visibility(0, False)
+    patch = session.history[-1]
+    assert patch.bytes < session.history_limit
+    assert len(patch.pixels.bands) > 1
+    expected = np.concatenate((stack.composite_samples(stack.default_order, {1}), spot), axis=-1)
+    np.testing.assert_array_equal(session.document.samples, expected)
+    session.undo()
+    np.testing.assert_array_equal(session.document.samples, original.samples)
+    assert not session.dirty
+    session.redo()
+    np.testing.assert_array_equal(session.document.samples, expected)
+    assert merged_pixels_match(session.document)
+    # Keep exact chronology when a spot paint follows the compressed layer edit.
+    session.apply(5, (1, 1, 3, 3), np.full((2, 2), 255, np.uint8), 0)
+    painted = session.document.samples.copy()
+    session.undo()
+    session.undo()
+    np.testing.assert_array_equal(session.document.samples, original.samples)
+    session.redo()
+    session.redo()
+    np.testing.assert_array_equal(session.document.samples, painted)
+    assert merged_pixels_match(session.document)
+
+
 def test_layer_noops_bad_inputs_and_unattached_stack_do_not_change_history():
     original, stack = document()
     session = EditSession(original)

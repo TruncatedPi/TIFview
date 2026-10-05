@@ -1,4 +1,4 @@
-TIFview 0.4.2 - printing image/channel/layer viewer and pixel editor
+TIFview 0.4.3 - printing image/channel/layer viewer and pixel editor
 
 Windows 10/11, 64-bit (x64).
 

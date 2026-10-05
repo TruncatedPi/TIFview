@@ -1,4 +1,4 @@
-# TIFview 0.4.2
+# TIFview 0.4.3
 
 [![Windows checks](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml/badge.svg)](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml)
 
@@ -36,7 +36,7 @@ the other spots; click **Composite** to return to the colour image.
 **Windows 10/11, 64-bit (x64). Python is included in the portable download.**
 
 1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
-2. Download [**TIFview-0.4.2-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.4.2/TIFview-0.4.2-windows-x64.zip) and extract the entire ZIP.
+2. Download [**TIFview-0.4.3-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.4.3/TIFview-0.4.3-windows-x64.zip) and extract the entire ZIP.
 3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
 
 Keep the `_internal` folder with the executable. No Python installation, Git,
@@ -154,6 +154,13 @@ appearance features can still proceed when the remaining stack is supported.
 
 Layer records load lazily when the tab is opened. Compressed pixels decode on
 demand, with a bounded cache and background preview work for large files.
+Layer undo stores lossless compressed pixel differences in row bands, so large
+visibility/order changes can fit the 128 MiB history budget without retaining
+two full merged-image rectangles. Undo/redo restores exact native 8/16-bit
+values. Very large incompressible changes can still exceed that budget.
+Compositing uses bounded temporary arrays and a direct native-pixel path when
+only one layer is visible. The first layer edit still checks the original
+merged image against the supported layer stack; later edits reuse that check.
 Pixel drawing remains in the **Channels** tab; painting underlying layer pixels
 is not implemented. The user validated both layer visibility/order test copies
 in **Photoshop and PrintExp** on the shop PC. This confirms the tested sample

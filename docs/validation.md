@@ -295,3 +295,33 @@ reported that everything looks good. The new layer visibility/order sample
 workflow therefore has user validation in both Photoshop and PrintExp for the
 Refinecolor 6090. The installed application versions were not recorded; this
 result covers these test copies rather than every Photoshop TIFF variant.
+
+## Large layer undo and compositing fix (v0.4.3)
+
+A private 7200 x 2160, 8-bit CMYK sample contains 89 MiB of decoded samples,
+associated transparency, one white spot and two raster layers. Hiding the lower
+layer reproduced the 128 MiB undo error in v0.4.2 after 23.75 seconds here.
+The before/after merged rectangle alone exceeded the history budget.
+
+Layer history now stores lossless, self-inverse compressed native differences
+in row bands. The existing 128 MiB history cap, atomic rejection, stable channel
+identities and chronological mixed undo/redo remain in place. The compositor
+uses interval views rather than cartesian-index copies, bounded uint32 bands
+for associated transparency, and direct native samples for a single visible
+layer. The original supported-stack baseline must still match the saved TIFF.
+
+Hiding each layer succeeds: the first edit took 10.48 seconds including the
+baseline check, the later edit 4.07 seconds. Undo/redo took 0.19-0.36 seconds.
+The history records occupied 904655 and 715355 bytes. These are local timings,
+not shop-PC measurements. Both resulting copies reopen with exact native
+merged samples, unchanged white spot samples and ICC profile, original
+compressed layer channel bytes, and the requested visibility flags. Exact
+undo/redo and the unchanged source SHA-256 were checked. Private images,
+UI captures and reports remain under ignored validation/local/shop-local/.
+Photoshop/PrintExp validation of these new copies has not yet been recorded.
+
+Synthetic regressions exercise a merged rectangle much larger than its allowed
+history budget, exact 8/16-bit restoration, rotated TIFF orientation, mixed spot
+painting and compressed layer undo, and independent single-layer mask/opacity
+oracles across band boundaries and odd preview strides. Existing atomic limit
+rejection, history eviction, source protection and TIFF-save checks remain.

@@ -48,11 +48,22 @@ def _protected_pixels(doc: ImageDocument, composite: np.ndarray):
     alpha_channel = transparency[0] if transparency else None
     process = composite[..., :doc.base_count]
     alpha = composite[..., doc.base_count]
-    if alpha_channel and alpha_channel.associated:
-        process = ((process.astype(np.uint64) * alpha[..., None].astype(np.uint64) +
-                    doc.maximum // 2) // doc.maximum).astype(doc.samples.dtype)
     indices = tuple(range(doc.base_count)) + (() if alpha_channel is None else (alpha_channel.index,))
-    values = process if alpha_channel is None else np.concatenate((process, alpha[..., None]), axis=-1)
+    if alpha_channel is None:
+        return indices, process
+    values = np.empty((*alpha.shape, len(indices)), dtype=doc.samples.dtype)
+    values[..., -1] = alpha
+    if alpha_channel.associated:
+        # Even uint16 products plus half the maximum fit uint32. Process in
+        # bands instead of allocating several whole-image uint64 arrays.
+        rows = max(1, 65536 // max(1, alpha.shape[1]))
+        for y in range(0, alpha.shape[0], rows):
+            block = np.multiply(process[y:y + rows], alpha[y:y + rows, :, None], dtype=np.uint32)
+            block += doc.maximum // 2
+            block //= doc.maximum
+            values[y:y + rows, :, :doc.base_count] = block
+    else:
+        values[..., :doc.base_count] = process
     return indices, values
 
 

@@ -278,6 +278,37 @@ def test_banded_composition_decodes_each_layer_once_even_with_disabled_shared_ca
     assert stack.cache_nbytes == 0
 
 
+@pytest.mark.parametrize("depth", [8, 16])
+@pytest.mark.parametrize("mode", ["RGB", "CMYK"])
+def test_single_layer_native_pixels_and_stride_match_masked_opacity_oracle(depth, mode):
+    doc = parent(depth, mode, shape=(200, 801))
+    maximum, count = doc.maximum, doc.base_count
+    rng = np.random.default_rng(502)
+    colors = rng.integers(0, maximum + 1, (203, 804, count), dtype=f"uint{depth}")
+    alpha = rng.integers(0, maximum + 1, (203, 804), dtype=f"uint{depth}")
+    alpha[::7, ::11] = 0
+    mask = rng.integers(0, maximum + 1, (150, 193), dtype=f"uint{depth}")
+    stored_colors = maximum - colors if mode == "CMYK" else colors
+    layer = raster(stored_colors, alpha, (-3, -5, 200, 799), opacity=128)
+    layer.mask = PsdLayerMask(default_color=255, rectangle=PsdRectangle(10, 7, 160, 200))
+    layer.channels.append(PsdChannel(PsdChannelId.USER_LAYER_MASK, data=mask))
+    stack = LayerStack(encode_layers([layer], depth), doc)
+    coverage = np.ones(alpha.shape, np.float64)
+    coverage[13:163, 12:205] = mask.astype(np.float64) / maximum
+    effective = alpha.astype(np.float64) / maximum * (128 / 255) * coverage
+    background = 0 if mode == "CMYK" else maximum
+    expected = np.zeros((200, 801, count + 1), dtype=f"uint{depth}")
+    expected[..., :count] = background
+    expected[:, :799, :count] = np.where(effective[3:, 5:, None] > 0, colors[3:, 5:], background)
+    expected[:, :799, -1] = np.rint(effective[3:, 5:] * maximum)
+    np.testing.assert_array_equal(stack.composite_samples(), expected)
+    from tifview.render import render
+    channels = doc.channels + [Channel(count, "Alpha", "Transparency", "test", (130, 130, 130))]
+    for stride in (2, 3, 7):
+        expected_doc = ImageDocument(doc.path, expected[::stride, ::stride], channels, mode, count, depth)
+        np.testing.assert_array_equal(stack.render_composite(stride=stride), render(expected_doc))
+
+
 @pytest.mark.parametrize("byteorder", ["<", ">"])
 def test_mask_parameters_use_adobe_bit_four_and_preserve_feather_without_guessing(byteorder):
     plain = struct.pack(byteorder + "4i2B", -2, 1, 5, 8, 255, 0) + b"\0\0"

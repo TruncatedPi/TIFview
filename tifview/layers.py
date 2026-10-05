@@ -40,6 +40,12 @@ _MAX_PIXELS = 40_000_000
 _MAX_DIMENSION = 300_000
 
 
+def _coordinate_slice(coordinates, offset=0):
+    """A regular sampled interval as a view, avoiding cartesian-index copies."""
+    step = int(coordinates[1] - coordinates[0]) if len(coordinates) > 1 else 1
+    return slice(int(coordinates[0]) - offset, int(coordinates[-1]) - offset + 1, step)
+
+
 class LayerError(ValueError):
     """Malformed or unsupported layer structure, reported without guessing."""
 
@@ -555,7 +561,7 @@ class LayerStack:
                          *, raw_preview: bool = False):
         maximum = (1 << self.bits) - 1
         local_y, local_x = y - layer.bounds[0], x - layer.bounds[1]
-        alpha = pixels.alpha[np.ix_(local_y, local_x)].astype(np.float64) / maximum
+        alpha = pixels.alpha[_coordinate_slice(local_y), _coordinate_slice(local_x)].astype(np.float64) / maximum
         alpha *= layer.opacity / 255
         mask = layer.mask
         if mask is not None and not mask.disabled and pixels.mask is not None:
@@ -568,7 +574,8 @@ class LayerStack:
             inside_y = np.flatnonzero((mask_y >= 0) & (mask_y < pixels.mask.shape[0]))
             inside_x = np.flatnonzero((mask_x >= 0) & (mask_x < pixels.mask.shape[1]))
             if len(inside_y) and len(inside_x):
-                coverage[np.ix_(inside_y, inside_x)] = pixels.mask[np.ix_(mask_y[inside_y], mask_x[inside_x])] / maximum
+                coverage[inside_y[0]:inside_y[-1] + 1, inside_x[0]:inside_x[-1] + 1] = (
+                    pixels.mask[_coordinate_slice(mask_y[inside_y]), _coordinate_slice(mask_x[inside_x])] / maximum)
             if mask.flags & 4:
                 coverage = 1 - coverage
             if mask.density != 255:
@@ -586,6 +593,31 @@ class LayerStack:
         maximum, count = (1 << self.bits) - 1, self.parent.base_count
         output = np.zeros((len(ys), len(xs), count + 1), dtype=f"uint{self.bits}")
         band_rows = max(1, 65536 // max(1, len(xs)))
+        active = [index for index in reversed(order) if index in visible
+                  and self.layers[index].has_pixels and self.layers[index].opacity]
+        if len(active) <= 1:
+            # A single layer has no colour blending: retain its native words
+            # directly, calculating only mask/opacity coverage in float bands.
+            background = 0 if self.parent.color_mode in ("CMYK", "WhiteIsZero") else maximum
+            output[..., :count] = background
+            if active:
+                layer = self.layers[active[0]]
+                ix = np.flatnonzero((xs >= layer.bounds[1]) & (xs < layer.bounds[3]))
+                if len(ix) and np.any((ys >= layer.bounds[0]) & (ys < layer.bounds[2])):
+                    pixels = self.decode_layer(active[0])
+                    for y_start in range(0, len(ys), band_rows):
+                        by = ys[y_start:y_start + band_rows]
+                        iy = np.flatnonzero((by >= layer.bounds[0]) & (by < layer.bounds[2]))
+                        if not len(iy):
+                            continue
+                        alpha = self._effective_alpha(layer, pixels, by[iy], xs[ix], raw_preview=raw_preview)
+                        region = output[y_start + iy[0]:y_start + iy[-1] + 1, ix[0]:ix[-1] + 1]
+                        region[..., :count] = pixels.samples[_coordinate_slice(by[iy], layer.bounds[0]),
+                                                            _coordinate_slice(xs[ix], layer.bounds[1])]
+                        np.copyto(region[..., :count], background, where=alpha[..., None] == 0)
+                        region[..., count] = np.rint(alpha * maximum)
+            output.flags.writeable = False
+            return output
         decoded_layers, decoded_bytes = {}, 0
         # Band compositing keeps floating-point work bounded even at 100% zoom.
         for y_start in range(0, len(ys), band_rows):
@@ -610,14 +642,15 @@ class LayerStack:
                     decoded_layers[index] = pixels
                     decoded_bytes += pixels.nbytes
                 source_alpha = self._effective_alpha(layer, pixels, by[iy], xs[ix], raw_preview=raw_preview)
-                source = pixels.samples[np.ix_(by[iy] - layer.bounds[0], xs[ix] - layer.bounds[1])].astype(np.float64)
+                source = pixels.samples[_coordinate_slice(by[iy], layer.bounds[0]),
+                                        _coordinate_slice(xs[ix], layer.bounds[1])].astype(np.float64)
                 source /= maximum
-                destination = premultiplied[np.ix_(iy, ix)]
+                destination = premultiplied[iy[0]:iy[-1] + 1, ix[0]:ix[-1] + 1]
                 destination *= 1 - source_alpha[..., None]
                 destination += source * source_alpha[..., None]
-                premultiplied[np.ix_(iy, ix)] = destination
-                old_alpha = alpha_out[np.ix_(iy, ix)]
-                alpha_out[np.ix_(iy, ix)] = source_alpha + old_alpha * (1 - source_alpha)
+                old_alpha = alpha_out[iy[0]:iy[-1] + 1, ix[0]:ix[-1] + 1]
+                old_alpha *= 1 - source_alpha
+                old_alpha += source_alpha
             np.divide(premultiplied, alpha_out[..., None], out=premultiplied, where=alpha_out[..., None] > 0)
             background = 0 if self.parent.color_mode in ("CMYK", "WhiteIsZero") else 1
             np.copyto(premultiplied, background, where=alpha_out[..., None] == 0)
