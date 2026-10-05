@@ -16,6 +16,7 @@ from tifview.app import ViewerWindow, configure_application
 from tifview.reader import load_image
 from tifview.render import render
 from tifview.writer import save_tiff_copy
+from tifview.layers import LayerStack
 
 
 def run(image_path: str, report_path: str) -> int:
@@ -160,6 +161,60 @@ def run(image_path: str, report_path: str) -> int:
             np.testing.assert_array_equal(displayed, render(window.doc, **settings))
             assert window.save_action.isEnabled()
             np.testing.assert_array_equal(reopened.samples, window.doc.samples)
+            # Exercise lazy layer decoding and the same native merge/save path
+            # used for Photoshop visibility/order changes in the portable app.
+            def drain_layers():
+                deadline = time.monotonic() + 20
+                while (window.layer_busy() or window.previewer is not None) and time.monotonic() < deadline:
+                    app.processEvents()
+                    time.sleep(.005)
+                app.processEvents()
+                assert not window.layer_busy() and window.previewer is None
+                assert not errors, "; ".join(errors)
+
+            window.tabs.setCurrentIndex(1)
+            drain_layers()
+            assert [layer.name for layer in window.doc.layer_stack.layers] == [
+                "SYNTHETIC original base", "SYNTHETIC overlay"]
+            assert window.doc.layer_state.order == (1, 0)
+            assert window.doc.layer_state.visible == frozenset({0})
+            assert not window.view.drawing_enabled
+            layer_start = window.doc.samples.copy()
+            window.layers_panel.tree.setCurrentItem(window.layers_panel.tree.topLevelItem(1))
+            drain_layers()
+            preview = window.view.image_item.pixmap().toImage()
+            assert preview.pixelColor(390, 250).green() > 150
+            window.layers_panel.tree.topLevelItem(1).setCheckState(0, Qt.CheckState.Checked)
+            drain_layers()
+            np.testing.assert_array_equal(window.doc.samples[250, 390, :3], [30, 200, 70])
+            window.move_layer(1, 1)
+            drain_layers()
+            np.testing.assert_array_equal(window.doc.samples[..., :3], layer_start[..., :3])
+            window.layer_visibility_changed(0, False)
+            drain_layers()
+            assert window.doc.channels[-1].kind == "Transparency"
+            assert window.doc.samples[10, 10, -1] == 0 and window.doc.samples[250, 390, -1] == 255
+            np.testing.assert_array_equal(window.doc.samples[..., 3:-1], layer_start[..., 3:])
+            after_layers = window.doc.samples.copy()
+            for _ in range(3):
+                window.undo()
+                drain_layers()
+            np.testing.assert_array_equal(window.doc.samples, layer_start)
+            for _ in range(3):
+                window.redo()
+                drain_layers()
+            np.testing.assert_array_equal(window.doc.samples, after_layers)
+            layer_path = report.with_name(report.stem + "-layers.tif")
+            if layer_path.exists():
+                raise FileExistsError(layer_path)
+            save_tiff_copy(window.edits.original, window.doc, layer_path)
+            saved_doc = load_image(layer_path)
+            np.testing.assert_array_equal(saved_doc.samples, after_layers)
+            saved_stack = LayerStack.from_document(saved_doc)
+            assert [layer.name for layer in saved_stack.layers] == ["SYNTHETIC overlay", "SYNTHETIC original base"]
+            assert saved_stack.default_visible == frozenset({0})
+            np.testing.assert_array_equal(saved_stack.decode_layer(0).samples,
+                                          window.doc.layer_stack.decode_layer(1).samples)
             assert hashlib.sha256(source.read_bytes()).hexdigest() == before
             result.update(passed=True, channels=doc.report()["channels"],
                           checks=["LZW decoding", "Photoshop names and types", "Qt channel pixels",
@@ -167,7 +222,9 @@ def run(image_path: str, report_path: str) -> int:
                                   "actual pixels, zoom and fit", "ellipse, box, line and text pixels",
                                   "create, duplicate, reorder, properties and delete spots", "exact structural undo and redo",
                                   "exact undo and redo", "TIFF save and reopen", "opaque RLE layers and ICC",
-                                  "rebuilt image pyramid", "untouched source"])
+                                  "rebuilt image pyramid", "lazy Qt layer pixels", "layer visibility and order",
+                                  "synchronized native layer composite and transparency", "saved compressed layer pixels",
+                                  "mixed layer undo and redo", "untouched source"])
         except Exception as exc:
             result.update(passed=False, error=traceback.format_exc())
         if window.previewer is not None:

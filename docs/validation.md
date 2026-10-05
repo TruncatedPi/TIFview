@@ -248,3 +248,45 @@ load races, close cancellation and fitted/full-resolution coordinate mapping.
 Reference annotation objects, sidecars and annotated PNG/PDF export remain
 planned. Current drawing tools burn pixels into the selected channel and save
 them to a separate TIFF; undo history is not persisted.
+
+## Layer inspection and saved stack changes (v0.4.0)
+
+The Layers tab lists Photoshop records top first and displays available cached
+layer pixels at their original canvas position. Supported visibility/order
+changes update native process/transparency samples and retain the compressed
+layer pixels, masks, names and opaque records. Spot and saved-alpha planes remain
+separate and unchanged by layer operations. Undo/redo restores layer state,
+primary pixels and any generated transparency channel together.
+
+On the private `Frankie ID card.tif`, the two visible layer records reproduce the
+existing primary RGB pixels exactly. Copies hiding Generative Expand and moving
+Layer 0 above it reopened with exactly the intended native samples. Both spot
+masks retained every native value; each original compressed layer chunk remained
+byte-for-byte intact. Hiding Generative Expand added genuine unassociated TIFF
+transparency. Undo restored all original pixels and the original channel layout.
+The original source SHA-256 remained unchanged. These copies and the GUI screenshot
+are in ignored `validation/local/layers/`; none are bundled or uploaded.
+
+The Bailey sample has a visible clipped adjustment layer, and the large Lion
+sample has a feathered mask. Those features are identified as unsupported for
+recomposition. Their saved TIFF composite remains available, and individual
+cached raster layers can be inspected with appearance notes. Hidden unsupported
+records are retained; visible unsupported features block relevant operations,
+while groups block recomposition even when hidden. A supported baseline must
+match the original native composite before an edit is accepted.
+
+Synthetic tests cover 8/16-bit native RGB/CMYK/grayscale samples, all supported
+layer compression modes, masks and opacity, TIFF orientation, caches, displayed
+Qt pixels, visibility/order, mixed channel/layer undo, source protection and
+stale-preview races. Save tests also use an independent psdtags parser and
+pyramid-averaging oracle; conflicting ExtraSamples association and forged stale
+merged-pixel proofs are rejected. The portable executable check exercises the
+same layer panel, worker, recomposition, undo and save/reopen paths.
+
+The common-format fixes made during integration are retained: PNG/JPEG DPI,
+EXIF-rotated resolution, PNG colour-key transparency, and unified image-size
+limits. Their import/export regressions run alongside the layer tests.
+
+This new layer workflow still needs independent comparison in Photoshop and
+PrintExp. Earlier successful channel-editing tests do not establish full
+Photoshop compositing or RIP compatibility for new layer changes.

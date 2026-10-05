@@ -2,9 +2,10 @@
 
 [![Windows checks](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml/badge.svg)](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml)
 
-A local Windows desktop prototype for inspecting printing images and painting
-simple shapes and text into individual process, spot and mask channels. Edits
-change channel pixels in memory; **Save TIFF copy** writes a separate file.
+A local Windows desktop prototype for inspecting printing images, viewing
+Photoshop layers, and painting simple shapes and text into individual process,
+spot and mask channels. Layer visibility and order can also be changed. Edits
+stay in memory; **Save TIFF copy** writes a separate file.
 The original image stays untouched. The user has tested edited TIFFs successfully
 in Photoshop and PrintExp (Hosonsoft) for a Refinecolor 6090, and installed the
 portable app on another PC. This confirms that workflow with the tested files.
@@ -35,7 +36,7 @@ the other spots; click **Composite** to return to the colour image.
 **Windows 10/11, 64-bit (x64). Python is included in the portable download.**
 
 1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
-2. Download **TIFview-0.3.2-windows-x64.zip** and extract the entire ZIP.
+2. Download [**TIFview-0.4.0-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.4.0/TIFview-0.4.0-windows-x64.zip) and extract the entire ZIP.
 3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
 
 Keep the `_internal` folder with the executable. No Python installation, Git,
@@ -78,6 +79,8 @@ No virtual-environment activation is needed. For console diagnostics, run
 ## Using the viewer
 
 - **Open** or drop one image onto the window.
+- Use the **Channels** tab for process/spot/mask inspection and pixel painting;
+  use **Layers** for Photoshop layer previews and saved visibility/order changes.
 - Select **Composite** for the saved primary TIFF image, converted to a screen preview.
 - Select a channel row for grayscale. CMYK process channels show ink as dark;
   Photoshop spot channels show their stored mask, normally black for ink.
@@ -98,6 +101,49 @@ No virtual-environment activation is needed. For console diagnostics, run
   Coordinates refer to the displayed orientation.
 - **File details** shows decoding information, channel evidence, original preview
   colour components, saved solidity/opacity, and any interpretation warnings.
+
+## View and arrange Photoshop layers
+
+Open the **Layers** tab. Layers are listed **top first**, matching the usual
+Photoshop stack. Select a layer name to inspect its saved raster pixels at their
+original position on the image canvas, including a hidden layer. Pan, zoom,
+fit and actual-pixel view work as they do for channels. **Layer stack** shows
+the combined visible layers when the stack can be rendered safely.
+
+- Tick/untick a layer to show/hide it in the stack.
+- Select a layer and click **Move up** or **Move down** to change its stack order.
+- Use **Ctrl+Z/Ctrl+Y** to undo/redo these changes, including mixed channel edits.
+- Use **Save TIFF copy** to keep the changed visibility/order. These layer controls
+  affect the saved file; channel overlay/visibility controls remain viewing settings.
+
+Saving a supported layer change updates the merged native process and image-
+transparency samples to agree with the new stack. Spot and saved-alpha masks
+stay separate and unchanged. The original compressed layer pixels, masks,
+names and opaque Photoshop data are retained; layer records move together with
+their compressed pixels, and only the requested visibility flags change.
+The original TIFF remains untouched.
+
+This first layer compositor supports ordinary **Normal** raster layers,
+opacity and simple unfeathered bitmap masks. Text and smart objects use their
+saved raster previews; their editable Photoshop records are preserved.
+Adjustment/fill layers, effects, groups, clipping, custom blend modes/Blend If,
+and feathered/vector masks are not reproduced. A warning explains which feature
+blocks a stack change or save. Hidden unsupported layers can be retained without
+being rendered; groups currently block stack recomposition even when hidden.
+An individual cached-pixel preview can still be useful, but does not apply
+unsupported adjustments or effects and is labelled accordingly.
+
+Before editing an otherwise supported stack, TIFview checks that its baseline
+recomposition exactly matches the original native process/transparency samples.
+If those pixels differ, layer editing is blocked with a reason; no approximate
+composite silently replaces the saved image. Explicitly hiding unsupported
+appearance features can still proceed when the remaining stack is supported.
+
+Layer records load lazily when the tab is opened. Compressed pixels decode on
+demand, with a bounded cache and background preview work for large files.
+Pixel drawing remains in the **Channels** tab; painting underlying layer pixels
+is not implemented. This new layer visibility/order workflow needs an independent
+**Photoshop and PrintExp round trip** before relying on it for production.
 
 ## Manage spot channels
 
@@ -157,11 +203,13 @@ when the source uses IBM-PC byte order. Spot count/order changes also check the
 layer headers for additional channel dependencies. Neutral default blending-range
 entries do not block retention. Unsupported or spot-dependent layer structures
 require a merged copy.
-The original layer block is copied
+When visibility/order stays unchanged, the original layer block is copied
 verbatim, retaining its RLE/ZIP compression and unknown Photoshop layer data.
-The app does not edit or recompose these layers. If CMYK/RGB/grayscale process
+Supported visibility/order changes recompose the merged image while retaining
+the compressed layer pixels. If CMYK/RGB/grayscale process
 pixels or composite transparency change, the original layers would contain a
-different image. The save dialog therefore requires a **merged copy without
+different image unless that change came from a supported layer recomposition.
+Direct channel painting of these samples therefore requires a **merged copy without
 Photoshop layers**, while keeping all process, spot and mask channel pixels.
 Undo those edits to retain layers. Macintosh layer blocks also currently require
 a merged copy when exporting to the IBM-PC preset.
@@ -171,7 +219,8 @@ a merged copy when exporting to the IBM-PC preset.
 | View, zoom, pan or change temporary overlays | Preserved; image data does not change |
 | Paint existing spot/saved-alpha masks; change spot names, preview colours or solidity | Preserved when process/transparency pixels stay unchanged |
 | Create, duplicate, delete or reorder spots | Preserved when the layer metadata passes the dependency check |
-| Paint RGB, CMYK, grayscale or image-transparency pixels | Requires a merged copy; editing/recomposing layer pixels is not implemented |
+| Show/hide or reorder supported layers | Preserved; merged native pixels are regenerated to match the stack |
+| Paint RGB, CMYK, grayscale or image-transparency pixels | Requires a merged copy; painting underlying layer pixels is not implemented |
 | Save Macintosh-byte-order layers using the IBM-PC preset | Requires a merged copy; layer byte-order conversion is not implemented |
 
 The save dialog selects layer retention whenever supported and explains any
@@ -233,10 +282,12 @@ selection, visibility and zoom controls are tested.
 
 - TIFF's first full-resolution IFD is displayed. Pyramid reductions are not
   treated as new channels. Additional independent pages are reported but not navigable.
-- Photoshop layers are detected, and the saved composite is used. Layer
-  visibility, adjustment layers, and layer-internal masks are not editable or
-  separately rendered. RLE/ZIP **layer** compression is not the same as TIFF
-  image compression; the viewer currently does not decode the layer pixels.
+- The Channels composite initially uses the saved primary TIFF image. The
+  Layers tab decodes supported cached layer pixels separately. Layer visibility
+  and order can be saved for supported stacks; adjustments, effects, groups,
+  custom blending and feathered/vector masks can block recomposition. Pixel
+  drawing does not edit an underlying Photoshop layer. RLE/ZIP **layer**
+  compression is independent of TIFF image compression and remains intact.
 - Saving supports unsigned 8/16-bit RGB, CMYK and grayscale images. Palette and
   1-bit TIFFs remain viewable but cannot be edited/saved. TIFFs with additional
   independent image pages cannot be saved, to avoid discarding unseen pages.
@@ -278,8 +329,8 @@ The main tradeoff is Python/Qt installation size and full-image RAM use versus
 fast development and a channel reader that can be tested independently.
 See [architecture and resource rules](docs/architecture.md).
 
-1. **Current:** channel inspection, spot creation/deletion/reordering/properties,
-   ellipse/box/line/text raster edits, undo/redo,
+1. **Current:** channel and cached-layer inspection, supported layer visibility/order,
+   spot creation/deletion/reordering/properties, ellipse/box/line/text raster edits, undo/redo,
    verified TIFF-copy export and portable Windows packaging. Validate edited
    copies on more Photoshop/RIP configurations and collect more real save variants.
 2. **Planned:** layer-aware process editing and tiled loading beyond the current RAM limits.

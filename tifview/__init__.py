@@ -1,3 +1,3 @@
 """Print-channel viewer and pixel-editing prototype."""
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"

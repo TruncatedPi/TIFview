@@ -241,3 +241,159 @@ def test_common_formats(tmp_path, format):
 def test_photoshop_resource_preview_cmyk_polarity_is_inverse_tiff():
     assert DisplayInfo(2, (0, 65535, 65535, 65535), 100, 2, 1077).rgb == (0, 255, 255)
     assert DisplayInfo(7, (10000, 0, 0, 0), 100, 2, 1077).rgb == (255, 255, 255)
+
+
+def test_common_format_dpi_preservation_and_rotation(tmp_path, monkeypatch):
+    # Preserves DPI on JPEG and PNG
+    jpg_path = tmp_path / "photo.jpg"
+    Image.new("RGB", (10, 10)).save(jpg_path, dpi=(300, 300))
+    doc_jpg = load_image(jpg_path)
+    assert doc_jpg.metadata["dpi"] == (300.0, 300.0)
+
+    # Fractional DPI from PNG pHYs chunk
+    png_frac = tmp_path / "frac.png"
+    Image.new("RGB", (10, 10)).save(png_frac, dpi=(144.5, 288.75))
+    doc_png = load_image(png_frac)
+    assert abs(doc_png.metadata["dpi"][0] - 144.5) < 0.01
+    assert abs(doc_png.metadata["dpi"][1] - 288.75) < 0.01
+
+    # Exact fractional float tuple preservation
+    orig_open = Image.open
+
+    def mock_open(*args, **kwargs):
+        im = orig_open(*args, **kwargs)
+        im.info["dpi"] = (144.5, 288.75)
+        return im
+
+    monkeypatch.setattr("PIL.Image.open", mock_open)
+    doc_frac = load_image(png_frac)
+    assert doc_frac.metadata["dpi"] == (144.5, 288.75)
+    monkeypatch.undo()
+
+    # Rotated non-square DPI: EXIF orientation 6 (90 CW) swaps axes and DPI
+    rot_path = tmp_path / "rotated.jpg"
+    exif = Image.Exif()
+    exif[274] = 6
+    Image.new("RGB", (20, 10)).save(rot_path, exif=exif, dpi=(300, 150))
+    doc_rot = load_image(rot_path)
+    assert doc_rot.width == 10 and doc_rot.height == 20
+    assert doc_rot.metadata["dpi"] == (150.0, 300.0)
+
+    # Non-swapping EXIF orientation 3 (180 deg) preserves axis ordering
+    rot3_path = tmp_path / "rot3.jpg"
+    exif[274] = 3
+    Image.new("RGB", (20, 10)).save(rot3_path, exif=exif, dpi=(300, 150))
+    doc_rot3 = load_image(rot3_path)
+    assert doc_rot3.metadata["dpi"] == (300.0, 150.0)
+
+    # Missing DPI yields None and no warnings
+    nodpi_path = tmp_path / "nodpi.png"
+    Image.new("RGB", (10, 10)).save(nodpi_path)
+    doc_nodpi = load_image(nodpi_path)
+    assert doc_nodpi.metadata["dpi"] is None
+    assert not any("resolution" in w.lower() for w in doc_nodpi.warnings)
+
+    # Invalid DPI emits warning
+    invalid_path = tmp_path / "invalid.png"
+    Image.new("RGB", (10, 10)).save(invalid_path, dpi=(0, 0))
+    doc_invalid = load_image(invalid_path)
+    assert doc_invalid.metadata["dpi"] is None
+    assert any("Invalid image resolution" in w for w in doc_invalid.warnings)
+
+
+def test_png_transparency_color_keys(tmp_path):
+    # RGB colour key
+    rgb_path = tmp_path / "key_rgb.png"
+    im_rgb = Image.new("RGB", (4, 4), (10, 20, 30))
+    im_rgb.putpixel((0, 0), (255, 0, 0))
+    im_rgb.save(rgb_path, format="PNG", transparency=(255, 0, 0))
+    doc_rgb = load_image(rgb_path)
+    assert len(doc_rgb.channels) == 4
+    assert doc_rgb.channels[3].kind == "Transparency"
+    assert not doc_rgb.channels[3].associated
+    assert doc_rgb.samples[0, 0, 3] == 0
+    assert doc_rgb.samples[0, 1, 3] == 255
+    assert tuple(doc_rgb.samples[0, 0, :3]) == (255, 0, 0)
+
+    # 8-bit Grayscale colour key
+    gray_path = tmp_path / "key_gray.png"
+    im_gray = Image.new("L", (4, 4), 100)
+    im_gray.putpixel((0, 0), 50)
+    im_gray.save(gray_path, format="PNG", transparency=50)
+    doc_gray = load_image(gray_path)
+    assert len(doc_gray.channels) == 2
+    assert doc_gray.channels[1].kind == "Transparency"
+    assert doc_gray.samples[0, 0, 1] == 0
+    assert doc_gray.samples[0, 1, 1] == 255
+    assert doc_gray.samples[0, 0, 0] == 50
+
+    # 16-bit Grayscale colour key
+    gray16_path = tmp_path / "key_gray16.png"
+    arr16 = np.array([[1000, 2000], [3000, 4000]], dtype=np.uint16)
+    Image.fromarray(arr16).save(gray16_path, format="PNG", transparency=2000)
+    doc_gray16 = load_image(gray16_path)
+    assert doc_gray16.bits == 16
+    assert doc_gray16.samples.dtype == np.uint16
+    assert len(doc_gray16.channels) == 2
+    assert doc_gray16.channels[1].kind == "Transparency"
+    assert doc_gray16.samples[0, 1, 1] == 0
+    assert doc_gray16.samples[0, 0, 1] == 65535
+    assert doc_gray16.samples[0, 1, 0] == 2000
+
+    # 1-bit colour key
+    bit_path = tmp_path / "key_1bit.png"
+    im_bit = Image.new("1", (4, 4), 1)
+    im_bit.putpixel((0, 0), 0)
+    im_bit.save(bit_path, format="PNG", transparency=0)
+    doc_bit = load_image(bit_path)
+    assert len(doc_bit.channels) == 2
+    assert doc_bit.channels[1].kind == "Transparency"
+    assert doc_bit.samples[0, 0, 1] == 0
+    assert doc_bit.samples[0, 1, 1] == 255
+
+    # Palette with transparency does not duplicate alpha
+    pal_path = tmp_path / "palette_trans.png"
+    im_pal = Image.new("P", (4, 4), 0)
+    im_pal.save(pal_path, format="PNG", transparency=0)
+    doc_pal = load_image(pal_path)
+    assert len(doc_pal.channels) == 4
+    assert [c.kind for c in doc_pal.channels] == ["Process", "Process", "Process", "Transparency"]
+
+    # RGBA does not duplicate alpha
+    rgba_path = tmp_path / "rgba.png"
+    Image.new("RGBA", (4, 4), (10, 20, 30, 255)).save(rgba_path, format="PNG")
+    doc_rgba = load_image(rgba_path)
+    assert len(doc_rgba.channels) == 4
+    assert [c.kind for c in doc_rgba.channels] == ["Process", "Process", "Process", "Transparency"]
+
+
+def test_image_limits_rejection_and_exact_boundaries(tmp_path, monkeypatch):
+    # Common format pixel boundary
+    monkeypatch.setattr("tifview.reader._MAX_PIXELS", 50)
+    ok_path = tmp_path / "ok_pixels.png"
+    Image.new("RGB", (5, 10)).save(ok_path)
+    doc_ok = load_image(ok_path)
+    assert doc_ok.width * doc_ok.height == 50
+
+    over_path = tmp_path / "over_pixels.png"
+    Image.new("RGB", (5, 11)).save(over_path)
+    with pytest.raises(UnsupportedImageError, match="40-million-pixel or 512 MiB decoded limit"):
+        load_image(over_path)
+
+    # Common format decoded bytes boundary
+    monkeypatch.setattr("tifview.reader._MAX_PIXELS", 10_000)
+    monkeypatch.setattr("tifview.reader._MAX_DECODED_BYTES", 300)
+    exact_bytes_path = tmp_path / "exact_bytes.png"
+    Image.new("RGB", (10, 10)).save(exact_bytes_path)  # 100 * 3 = 300 bytes
+    doc_bytes = load_image(exact_bytes_path)
+    assert doc_bytes.samples.nbytes == 300
+
+    over_bytes_path = tmp_path / "over_bytes.png"
+    Image.new("RGB", (10, 11)).save(over_bytes_path)  # 110 * 3 = 330 bytes
+    with pytest.raises(UnsupportedImageError, match="40-million-pixel or 512 MiB decoded limit"):
+        load_image(over_bytes_path)
+
+    # TIFF format respects limits
+    monkeypatch.setattr("tifview.reader._MAX_PIXELS", 50)
+    with pytest.raises(UnsupportedImageError, match="40-million-pixel or 512 MiB decoded limit"):
+        load_image(write_tiff(tmp_path, np.zeros((6, 10, 3), np.uint8)))

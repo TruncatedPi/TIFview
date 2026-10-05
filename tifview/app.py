@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QFontComboBox, QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton, QSlider, QSplitter, QTextEdit,
-    QSpinBox, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QSpinBox, QTabWidget, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .model import ImageDocument
@@ -21,6 +21,8 @@ from .reader import load_image
 from .render import RenderCancelled, grayscale, render
 from .preview import PreviewCache, preview_key
 from .editing import EditSession, raster_shape
+from .layerpanel import LayersPanel
+from .layers import LayerStack
 from .writer import SaveOptions, layer_preservation_reason, save_tiff_copy
 
 
@@ -215,19 +217,59 @@ class Saver(QThread):
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
+class LayerLoader(QThread):
+    loaded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, doc):
+        super().__init__()
+        self.doc = doc
+
+    def run(self):
+        try:
+            self.loaded.emit(LayerStack.from_document(self.doc))
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
+class LayerEditor(QThread):
+    changed = Signal()
+    failed = Signal(str)
+
+    def __init__(self, edits, operation, args):
+        super().__init__()
+        self.edits, self.operation, self.args = edits, operation, args
+
+    def run(self):
+        try:
+            getattr(self.edits, self.operation)(*self.args)
+            self.changed.emit()
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
 class Previewer(QThread):
     loaded = Signal(object, object)
     failed = Signal(object, str)
 
     def __init__(self, doc, key, settings, stride=1):
         super().__init__()
-        if stride > 1:
+        self.stride = stride
+        if stride > 1 and "layer" not in settings:
             doc = replace(doc, samples=doc.display_samples[::stride, ::stride], orientation=1)
         self.doc, self.key, self.settings = doc, key, settings
 
     def run(self):
         try:
-            pixels = render(self.doc, **self.settings, cancelled=self.isInterruptionRequested)
+            if "layer" in self.settings:
+                index = self.settings["layer"]
+                stack, state = self.doc.layer_stack, self.doc.layer_state
+                if index is None:
+                    pixels = stack.render_composite(state.order, state.visible, stride=self.stride)
+                else:
+                    pixels = stack.render_layer(index, stride=self.stride)
+            else:
+                pixels = render(self.doc, **self.settings, cancelled=self.isInterruptionRequested)
             self.loaded.emit(self.key, pixels)
         except RenderCancelled:
             pass
@@ -302,7 +344,7 @@ class TiffSaveDialog(QDialog):
         self.pyramid = QCheckBox("Save image pyramid (rebuild from edited pixels)")
         self.pyramid.setChecked(True)
         layout.addWidget(self.pyramid)
-        self.layers = QCheckBox("Retain original Photoshop layers")
+        self.layers = QCheckBox("Retain Photoshop layers")
         has_layers = bool(original.metadata.get("has_photoshop_layers"))
         reason = layer_preservation_reason(original, edited)
         self.layers.setChecked(has_layers and reason is None)
@@ -313,7 +355,10 @@ class TiffSaveDialog(QDialog):
             if original.metadata.get("byte_order") == "IBM PC (little endian)":
                 explanation += "To retain layers, undo the incompatible changes described above."
         elif has_layers:
-            explanation = "These spot-channel changes and saved-mask edits can retain the original layer block, including its existing RLE/ZIP compression."
+            if edited.metadata.get("layer_composite_applied"):
+                explanation = "Layer visibility and order are saved with matching merged channel pixels. Original layer pixels and their RLE/ZIP compression are preserved."
+            else:
+                explanation = "These spot-channel changes and saved-mask edits can retain the original layer block, including its existing RLE/ZIP compression."
         else:
             explanation = "The source has no Photoshop layers. All image and extra channel pixels are saved."
         if original.metadata.get("has_content_credentials"):
@@ -339,6 +384,8 @@ class ViewerWindow(QMainWindow):
         self.loader: Loader | None = None
         self.saver: Saver | None = None
         self.previewer: Previewer | None = None
+        self.layer_loader: LayerLoader | None = None
+        self.layer_editor: LayerEditor | None = None
         self.preview_cache = PreviewCache()
         self._preview_version = 0
         self._requested_preview = self._displayed_preview = None
@@ -443,6 +490,14 @@ class ViewerWindow(QMainWindow):
         self.dimensions = QLabel("TIFF · PNG · JPEG · BMP · WebP")
         self.dimensions.setWordWrap(True)
         layout.addWidget(self.dimensions)
+        self.tabs = QTabWidget()
+        channel_tab = QWidget()
+        channel_layout = QVBoxLayout(channel_tab)
+        channel_layout.setContentsMargins(0, 6, 0, 0)
+        layout.addWidget(self.tabs, 1)
+        self.tabs.addTab(channel_tab, "Channels")
+        # Keep channel display controls together when switching to layer pixels.
+        layout = channel_layout
         layout.addWidget(QLabel("Channels · right-click for spot options"))
         self.channels = QTreeWidget()
         self.channels.setHeaderLabels(["Channel", "Type"])
@@ -480,6 +535,12 @@ class ViewerWindow(QMainWindow):
         self.channel_info = QLabel("Select a channel for grayscale. Tick channels to change the composite.")
         self.channel_info.setWordWrap(True)
         layout.addWidget(self.channel_info)
+        self.layers_panel = LayersPanel()
+        self.tabs.addTab(self.layers_panel, "Layers")
+        self.tabs.currentChanged.connect(self.tab_changed)
+        self.layers_panel.selection_changed.connect(self.layer_selection_changed)
+        self.layers_panel.visibility_requested.connect(self.layer_visibility_changed)
+        self.layers_panel.move_requested.connect(self.move_layer)
         self.notice = QLabel("Photoshop TIFF export needs Photoshop and RIP validation")
         self.notice.setWordWrap(True)
         self.notice.setStyleSheet("background: #fff0cb; color: #563a00; padding: 8px;")
@@ -519,7 +580,7 @@ class ViewerWindow(QMainWindow):
             self.open_path(filename)
 
     def open_path(self, path: str):
-        if self.loader is not None or self.saver is not None or self.previewer is not None:
+        if self.loader is not None or self.saver is not None or self.previewer is not None or self.layer_busy():
             return
         if not self.confirm_discard():
             return
@@ -548,6 +609,11 @@ class ViewerWindow(QMainWindow):
     def accept_document(self, doc: ImageDocument, preview: np.ndarray):
         self.doc = doc
         self.edits = EditSession(doc)
+        self.tabs.blockSignals(True)
+        self.tabs.setCurrentIndex(0)
+        self.tabs.blockSignals(False)
+        self.layers_panel.set_edit_reason(None)
+        self.layers_panel.set_layers(None, selected=None)
         self._preview_version += 1
         if self.previewer is not None:
             self.previewer.requestInterruption()
@@ -578,7 +644,7 @@ class ViewerWindow(QMainWindow):
         if any(c.kind == "Unknown" for c in doc.channels):
             summary.append("Some channel types are unknown.")
         if doc.metadata.get("has_photoshop_layers"):
-            summary.append("Viewing saved composite and channels.")
+            summary.append("Photoshop layers available in the Layers tab.")
         if messages:
             summary.append("See File details for reading and colour notes.")
         self.notice.setText("\n".join(summary))
@@ -605,6 +671,81 @@ class ViewerWindow(QMainWindow):
         doc = self.doc
         self.dimensions.setText(f"{doc.width:,} × {doc.height:,} px · {doc.bits}-bit {doc.color_mode}\n"
                                 f"{len(doc.channels)} samples · {doc.samples.nbytes / 2**20:.1f} MiB raw")
+
+    def layer_mode(self):
+        return self.tabs.currentIndex() == 1
+
+    def layer_busy(self):
+        return (self.layer_loader is not None or self.layer_editor is not None or
+                getattr(self, "_pending_layer_change", None) is not None)
+
+    def tab_changed(self, *_):
+        self.tool_combo.setCurrentIndex(0)
+        self.set_controls()
+        if self.layer_mode() and self.doc and self.doc.metadata.get("has_photoshop_layers") and self.doc.layer_stack is None:
+            if not self.layer_busy() and self.saver is None:
+                self.layer_loader = LayerLoader(self.edits.original)
+                self.layer_loader.loaded.connect(self.accept_layers)
+                self.layer_loader.failed.connect(self.layers_failed)
+                self.layer_loader.finished.connect(self.layers_finished)
+                self.layer_loader.start()
+                self.set_controls()
+                self.layers_panel.notice.setText("Reading Photoshop layer records…")
+        self.refresh()
+
+    def accept_layers(self, stack):
+        self.edits.attach_layers(stack)
+        self.doc = self.edits.document
+        self.update_layers_panel()
+
+    def layers_failed(self, message):
+        self.layers_panel.set_edit_reason(message)
+        self.statusBar().showMessage(f"Could not read Photoshop layers: {message}")
+
+    def layers_finished(self):
+        worker, self.layer_loader = self.layer_loader, None
+        worker.deleteLater()
+        self.set_controls()
+        self.refresh()
+
+    def update_layers_panel(self):
+        if self.doc and self.doc.layer_stack:
+            state = self.doc.layer_state
+            self.layers_panel.set_layers(self.doc.layer_stack, state.order, state.visible)
+
+    def layer_selection_changed(self, *_):
+        self.set_controls()
+        self.refresh()
+
+    def perform_layer_change(self, operation, *args):
+        if not self.edits or not self.doc.layer_stack or self.loader or self.saver or self.layer_busy():
+            return
+        if self.previewer:
+            # Finish lazy decoding before asking the backend to use its cache.
+            self.previewer.requestInterruption()
+            self._pending_layer_change = (operation, args)
+            self.set_controls()
+            return
+        self.layer_editor = LayerEditor(self.edits, operation, args)
+        self.layer_editor.changed.connect(self.edits_changed)
+        self.layer_editor.failed.connect(lambda message: QMessageBox.warning(self, "Could not change layers", message))
+        self.layer_editor.finished.connect(self.layer_edit_finished)
+        self.layer_editor.start()
+        self.set_controls()
+        self.statusBar().showMessage("Updating layer stack and merged channel pixels…")
+
+    def layer_visibility_changed(self, index, visible):
+        self.perform_layer_change("set_layer_visibility", index, visible)
+
+    def move_layer(self, index, delta):
+        self.perform_layer_change("move_layer", index, delta)
+
+    def layer_edit_finished(self):
+        worker, self.layer_editor = self.layer_editor, None
+        worker.deleteLater()
+        self.set_controls()
+        self.refresh()
+        self.statusBar().showMessage("Layer stack ready · Ctrl+Z: undo · Save TIFF copy to keep changes")
 
     def selected_channel_id(self):
         item = self.channels.currentItem()
@@ -653,7 +794,8 @@ class ViewerWindow(QMainWindow):
 
     def spot_edit_allowed(self):
         return (self.edits is not None and self.doc.bits in (8, 16) and self.doc.color_mode != "Palette"
-                and self.loader is None and self.saver is None and self.previewer is None)
+                and self.loader is None and self.saver is None and self.previewer is None and not self.layer_busy()
+                and not self.layer_mode())
 
     def selected_spot(self):
         index = self.selected_index()
@@ -755,7 +897,7 @@ class ViewerWindow(QMainWindow):
 
     def apply_drawing(self, tool, start, end, text=None):
         index = self.selected_index()
-        if self.edits is None or index is None or self.saver is not None or self.loader is not None or self.previewer is not None:
+        if self.edits is None or index is None or self.saver is not None or self.loader is not None or self.previewer is not None or self.layer_busy() or self.layer_mode():
             return
         if tool == "Text" and text is None:
             text, accepted = QInputDialog.getMultiLineText(self, "Paint text into channel", "Text:")
@@ -780,6 +922,7 @@ class ViewerWindow(QMainWindow):
         self._displayed_preview = None
         self.setWindowModified(self.edits.dirty)
         self.rebuild_channels(selected_id)
+        self.update_layers_panel()
         self.update_dimensions()
         self.set_controls()
         self.refresh()
@@ -803,25 +946,25 @@ class ViewerWindow(QMainWindow):
                 40, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)))
 
     def undo(self):
-        if self.edits and self.saver is None and self.loader is None and self.previewer is None:
+        if self.edits and self.saver is None and self.loader is None and self.previewer is None and not self.layer_busy():
             self.edits.undo()
             self.edits_changed()
 
     def redo(self):
-        if self.edits and self.saver is None and self.loader is None and self.previewer is None:
+        if self.edits and self.saver is None and self.loader is None and self.previewer is None and not self.layer_busy():
             self.edits.redo()
             self.edits_changed()
 
     def confirm_discard(self):
         if not self.edits or not self.edits.dirty:
             return True
-        answer = QMessageBox.question(self, "Unsaved channel edits", "Discard unsaved channel and pixel edits? The original source file is unchanged.",
+        answer = QMessageBox.question(self, "Unsaved edits", "Discard unsaved channel, layer and pixel edits? The original source file is unchanged.",
                                       QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
                                       QMessageBox.StandardButton.Cancel)
         return answer == QMessageBox.StandardButton.Discard
 
     def choose_save(self):
-        if self.edits is None or self.saver is not None or self.loader is not None or self.previewer is not None:
+        if self.edits is None or self.saver is not None or self.loader is not None or self.previewer is not None or self.layer_busy():
             return
         dialog = TiffSaveDialog(self.edits.original, self.doc, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -834,7 +977,7 @@ class ViewerWindow(QMainWindow):
             self.save_copy(filename, dialog.options(), overwrite=True)
 
     def save_copy(self, filename, options=SaveOptions(), overwrite=False):
-        if self.edits is None or self.saver is not None or self.loader is not None or self.previewer is not None:
+        if self.edits is None or self.saver is not None or self.loader is not None or self.previewer is not None or self.layer_busy():
             return
         self.tool_combo.setCurrentIndex(0)
         self.saver = Saver(self.edits.original, self.doc, filename, options, overwrite)
@@ -867,10 +1010,10 @@ class ViewerWindow(QMainWindow):
 
     def set_controls(self):
         selected = self.selected_index() if self.doc else None
-        busy = self.loader is not None or self.saver is not None
+        busy = self.loader is not None or self.saver is not None or self.layer_busy()
         rendering = self.previewer is not None
         editable = self.doc is not None and self.doc.bits in (8, 16) and self.doc.color_mode != "Palette"
-        spot_editable = editable and not busy and not rendering
+        spot_editable = editable and not busy and not rendering and not self.layer_mode()
         spot = self.selected_spot()
         sequence = self.doc.spot_sequence(spot) if spot is not None else None
         spot_count = sum(c.kind == "Spot" for c in self.doc.channels) if self.doc else 0
@@ -884,10 +1027,24 @@ class ViewerWindow(QMainWindow):
         self.save_action.setEnabled(editable and not busy and not rendering)
         self.undo_action.setEnabled(bool(self.edits and self.edits.can_undo and not busy and not rendering))
         self.redo_action.setEnabled(bool(self.edits and self.edits.can_redo and not busy and not rendering))
-        self.edit_toolbar.setEnabled(editable and selected is not None and not busy and not rendering)
+        self.edit_toolbar.setEnabled(editable and selected is not None and not busy and not rendering and not self.layer_mode())
         self.channels.setEnabled(self.loader is None)
-        self.view.drawing_enabled = editable and selected is not None and not busy and not rendering
-        if not editable or selected is None or busy:
+        self.view.drawing_enabled = editable and selected is not None and not busy and not rendering and not self.layer_mode()
+        self.layers_panel.set_busy(busy)
+        if self.doc and self.doc.layer_stack:
+            stack, state = self.doc.layer_stack, self.doc.layer_state
+            reason = stack.composite_reason(state.order, frozenset())
+            if self.doc.metadata.get("byte_order") != "IBM PC (little endian)":
+                reason = "Saving layer changes in Macintosh-byte-order TIFFs is not implemented."
+            self.layers_panel.set_edit_reason(reason)
+            index = self.layers_panel.selected_index()
+            if not reason and index is not None and stack.layers[index].preview_note:
+                self.layers_panel.notice.setText(stack.layers[index].preview_note)
+            elif not reason and index is None:
+                note = stack.composite_reason(state.order, state.visible)
+                if note:
+                    self.layers_panel.notice.setText("Showing saved TIFF composite. Layer-stack rendering unavailable: " + note)
+        if not editable or selected is None or busy or self.layer_mode():
             self.tool_combo.setCurrentIndex(0)
             self.view.set_tool("Pan")
         if self.doc:
@@ -938,6 +1095,11 @@ class ViewerWindow(QMainWindow):
             self.refresh()
 
     def preview_settings(self):
+        if self.layer_mode() and self.doc.layer_stack:
+            index = self.layers_panel.selected_index()
+            stride = self.layer_preview_stride()
+            state = self.doc.layer_state
+            return (self._preview_version, stride, "layer", index, state), {"layer": index}
         settings = dict(selected=self.selected_index(), colored=self.style_combo.currentIndex() == 1,
                         visible=self.visible_indices(), overlays=self.overlays.isChecked(),
                         opacity=self.opacity.value() / 100, invert=self.invert.isChecked(), colors=dict(self.colors))
@@ -950,8 +1112,22 @@ class ViewerWindow(QMainWindow):
             stride = max(1, math.ceil(max(self.doc.width / target_width, self.doc.height / target_height)))
         return (self._preview_version, stride, preview_key(self.doc, **settings)), settings
 
+    def layer_preview_stride(self):
+        if not self.view.fitted:
+            return 1
+        ratio = self.view.viewport().devicePixelRatioF()
+        width = max(1, self.view.viewport().width() * ratio * 1.5)
+        height = max(1, self.view.viewport().height() * ratio * 1.5)
+        return max(1, math.ceil(max(self.doc.width / width, self.doc.height / height)))
+
     def refresh(self):
-        if self.doc is None or self.loader is not None:
+        if self.doc is None or self.loader is not None or self.layer_busy():
+            return
+        if self.layer_mode() and self.doc.layer_stack is None:
+            if self.previewer:
+                self.previewer.requestInterruption()
+            self._requested_preview = self._displayed_preview = self._pending_preview = None
+            self.view.clear_image(self.doc.width, self.doc.height)
             return
         key, settings = self.preview_settings()
         self._requested_preview = key
@@ -966,7 +1142,18 @@ class ViewerWindow(QMainWindow):
             return
         # Native grayscale is cheap enough to prepare directly. Composite and
         # coloured masks for large images run off the UI thread and coalesce.
-        if settings["selected"] is not None and not settings["colored"]:
+        if "layer" in settings:
+            if settings["layer"] is None and self.doc.layer_stack.composite_reason(
+                    self.doc.layer_state.order, self.doc.layer_state.visible):
+                # The existing merged TIFF remains the authoritative preview
+                # when Photoshop features cannot be synthesized faithfully.
+                settings = dict(selected=None, visible={c.index for c in self.doc.channels
+                                if c.index < self.doc.base_count or c.kind == "Transparency"})
+            if self.previewer is None:
+                self.start_preview(key, settings)
+            elif self.previewer.key != key or self.previewer.isInterruptionRequested():
+                self._pending_preview = key, settings
+        elif settings["selected"] is not None and not settings["colored"]:
             self.install_preview(key, grayscale(self.doc, settings["selected"], settings["invert"]))
         elif self.doc.width * self.doc.height > ASYNC_PREVIEW_PIXELS:
             if self.previewer is None:
@@ -1000,6 +1187,10 @@ class ViewerWindow(QMainWindow):
 
     def preview_failed(self, key, message):
         if key == self._requested_preview:
+            if self.layer_mode():
+                self.view.clear_image(self.doc.width, self.doc.height)
+                self.layers_panel.notice.setText(message)
+                self._displayed_preview = None
             self.statusBar().showMessage(f"Preview error: {message}")
 
     def preview_finished(self):
@@ -1007,9 +1198,14 @@ class ViewerWindow(QMainWindow):
         worker.deleteLater()
         pending, self._pending_preview = self._pending_preview, None
         self.set_controls()
+        operation = getattr(self, "_pending_layer_change", None)
+        self._pending_layer_change = None
         if self._close_after_preview:
             self._close_after_preview = False
             self.close()
+        elif operation is not None:
+            self._pending_preview = None
+            self.perform_layer_change(operation[0], *operation[1])
         elif pending is not None and pending[0] == self._requested_preview:
             self.start_preview(*pending)
         else:
@@ -1028,6 +1224,11 @@ class ViewerWindow(QMainWindow):
 
     def inspect_pixel(self, x: int, y: int):
         if not self.doc or not (0 <= x < self.doc.width and 0 <= y < self.doc.height):
+            return
+        if self.layer_mode():
+            index = self.layers_panel.selected_index()
+            label = self.doc.layer_stack.layers[index].name if self.doc.layer_stack and index is not None else "Layer stack"
+            self.statusBar().showMessage(f"{label} · Display pixel ({x}, {y}) · Layer preview")
             return
         index = self.selected_index()
         if index is not None:
@@ -1070,7 +1271,7 @@ class ViewerWindow(QMainWindow):
 
     def closeEvent(self, event):
         # A decoder cannot safely be terminated midway through a codec operation.
-        if (self.loader is not None and self.loader.isRunning()) or (self.saver is not None and self.saver.isRunning()):
+        if (self.loader is not None and self.loader.isRunning()) or (self.saver is not None and self.saver.isRunning()) or self.layer_busy():
             self.statusBar().showMessage("Please wait for the image read/save to finish before closing.")
             event.ignore()
         elif self.previewer is not None:

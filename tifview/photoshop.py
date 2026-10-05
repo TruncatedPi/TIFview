@@ -262,7 +262,13 @@ def rewrite_channel_resources(data, before_channels, after_channels, source_indi
         counts = {len(extra_types), sum(t not in (1, 2) for t in extra_types)}
         raw = len(values) in counts
         prefixed = bool(values) and values[0] == len(values) - 1 and len(values) - 1 in counts
-        if raw and prefixed and values[0] != 0:
+        # Our saved raw ID list explicitly includes zero at TIFF transparency
+        # positions. A first spot ID equal to the non-transparency count must
+        # not be mistaken for a count prefix on the next reorder/save.
+        canonical_raw = (len(values) == len(extra_types) and
+                         all((value == 0) == (kind in (1, 2))
+                             for value, kind in zip(values, extra_types)))
+        if raw and prefixed and values[0] != 0 and not canonical_raw:
             raise ValueError("Ambiguous Photoshop alpha identifier framing")
         if not raw:
             if not prefixed:

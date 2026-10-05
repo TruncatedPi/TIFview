@@ -47,14 +47,19 @@ def make_demo(path: Path, layers: bool = False):
     if layers:
         from PIL import ImageCms
         from psdtags import (PsdChannel, PsdChannelId, PsdCompressionType, PsdFormat, PsdKey,
-                             PsdLayer, PsdLayers, PsdRectangle, PsdUserMask, TiffImageSourceData)
+                             PsdLayer, PsdLayerFlag, PsdLayers, PsdRectangle, PsdUserMask, TiffImageSourceData)
         channels = [PsdChannel(PsdChannelId(i), PsdCompressionType.RLE, data[..., i].copy()) for i in range(3)]
         # Photoshop may retain a neutral fourth-channel range in an RGB file.
         # Exercise that preservation path in the packaged create/reorder check.
         neutral_ranges = struct.unpack("<10i", bytes.fromhex("0000ffff0000ffff") * 5)
         layer = PsdLayer("SYNTHETIC original base", channels, PsdRectangle(0, 0, h, w),
                          blending_ranges=neutral_ranges)
-        source_data = TiffImageSourceData(PsdFormat.LE32BIT, PsdLayers(PsdKey.LAYER, [layer]), PsdUserMask())
+        patch = np.full((140, 140, 3), [30, 200, 70], np.uint8)
+        overlay = PsdLayer("SYNTHETIC overlay", [PsdChannel(PsdChannelId(i), PsdCompressionType.RLE,
+                           patch[..., i].copy()) for i in range(3)], PsdRectangle(180, 320, 320, 460),
+                           flags=PsdLayerFlag.PHOTOSHOP5 | PsdLayerFlag.VISIBLE,
+                           blending_ranges=neutral_ranges)
+        source_data = TiffImageSourceData(PsdFormat.LE32BIT, PsdLayers(PsdKey.LAYER, [layer, overlay]), PsdUserMask())
         tags.append(source_data.tifftag(compression=PsdCompressionType.RLE))
         profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
     # A codec or write failure may occur after tifffile creates its header.

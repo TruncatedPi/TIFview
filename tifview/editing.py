@@ -10,7 +10,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter, QPen
 
 from .model import ImageDocument, orient
-from . import spots
+from . import spots, layerediting
 
 
 @dataclass
@@ -34,11 +34,12 @@ class Layout:
     metadata: dict
     warnings: tuple[str, ...]
     channel_ids: tuple[int, ...]
+    layer_state: object | None = None
 
     @classmethod
     def capture(cls, doc, channel_ids):
         return cls(tuple(doc.channels), doc.photoshop_resources, dict(doc.metadata),
-                   tuple(doc.warnings), tuple(channel_ids))
+                   tuple(doc.warnings), tuple(channel_ids), doc.layer_state)
 
     @property
     def bytes(self):
@@ -65,6 +66,22 @@ class StructuralPatch:
         return (self.before.bytes + self.after.bytes +
                 (0 if self.added_plane is None else self.added_plane.nbytes) +
                 (0 if self.deleted_plane is None else self.deleted_plane.nbytes))
+
+
+@dataclass
+class LayerPatch:
+    before: Layout
+    after: Layout
+    pixels: Patch | None
+    added_plane: np.ndarray | None
+    previous_state: int
+    next_state: int
+
+    @property
+    def bytes(self):
+        return (self.before.bytes + self.after.bytes +
+                (0 if self.pixels is None else self.pixels.bytes) +
+                (0 if self.added_plane is None else self.added_plane.nbytes))
 
 
 def raster_shape(tool: str, start: tuple[float, float], end: tuple[float, float],
@@ -132,7 +149,7 @@ class EditSession:
     def __init__(self, original: ImageDocument, history_limit: int = 128 * 2**20):
         self.original = self.document = original
         self._samples = None
-        self.history: list[Patch | StructuralPatch] = []
+        self.history: list[Patch | StructuralPatch | LayerPatch] = []
         self.cursor = 0
         self.state = self.saved_state = self._sequence = 0
         self.history_limit = history_limit
@@ -262,6 +279,98 @@ class EditSession:
         self._structure(result, self.channel_ids)
         return True
 
+    def attach_layers(self, stack):
+        """Attach a lazily decoded layer inventory without making an edit."""
+        if self.document.layer_stack is stack and self.document.layer_state is not None:
+            return
+        if self.document.layer_stack is not None and self.document.layer_state is not None:
+            raise ValueError("A different layer stack is already attached")
+        state = layerediting.default_state(stack)
+        layerediting.validate_state(stack, state)
+        self.original.layer_stack = stack
+        self.original.layer_state = state
+        if self.document is not self.original:
+            self.document = replace(self.document, layer_stack=stack, layer_state=state)
+        # Spot history may predate lazy layer loading. Its captured layouts
+        # describe this same baseline layer state, so undo must retain it.
+        for patch in self.history:
+            if isinstance(patch, StructuralPatch):
+                for layout in (patch.before, patch.after):
+                    if layout.layer_state is None:
+                        layout.layer_state = state
+
+    def _layer_change(self, state):
+        doc = self.document
+        stack = doc.layer_stack
+        if stack is None or doc.layer_state is None:
+            raise ValueError("Load Photoshop layers before editing their visibility or order")
+        layerediting.validate_state(stack, state)
+        if state == doc.layer_state:
+            return False
+        layerediting.require_unchanged_merged_pixels(self.original, doc, stack)
+        result, added = layerediting.recompose_document(doc, stack, state)
+        indices = tuple(range(doc.base_count)) + tuple(c.index for c in doc.channels if c.kind == "Transparency")
+        old, new = doc.display_samples, result.display_samples
+        difference = np.zeros(old.shape[:2], dtype=bool)
+        for index in indices:
+            difference |= old[..., index] != new[..., index]
+        pixel_patch = None
+        ids = (*self.channel_ids, self._next_channel_id) if added else self.channel_ids
+        before_layout, after_layout = Layout.capture(doc, self.channel_ids), Layout.capture(result, ids)
+        required = before_layout.bytes + after_layout.bytes + (result.samples[..., -1].nbytes if added else 0)
+        if np.any(difference):
+            ys = np.flatnonzero(np.any(difference, axis=1))
+            xs = np.flatnonzero(np.any(difference, axis=0))
+            x0, y0, x1, y1 = int(xs[0]), int(ys[0]), int(xs[-1]) + 1, int(ys[-1]) + 1
+            required += 2 * (x1 - x0) * (y1 - y0) * len(indices) * doc.samples.dtype.itemsize
+            if required > self.history_limit:
+                raise ValueError("Layer change exceeds the 128 MiB undo limit")
+            before = old[y0:y1, x0:x1, indices].copy()
+            after = new[y0:y1, x0:x1, indices].copy()
+            before.flags.writeable = after.flags.writeable = False
+            pixel_patch = Patch(indices, (x0, y0, x1, y1), before, after, self.state, self._sequence + 1)
+        elif required > self.history_limit:
+            raise ValueError("Layer change exceeds the 128 MiB undo limit")
+        plane = result.samples[..., -1].copy() if added else None
+        if plane is not None:
+            plane.flags.writeable = False
+        patch = LayerPatch(before_layout, after_layout,
+                           pixel_patch, plane, self.state, self._sequence + 1)
+        # Allocate and validate everything before changing history or the
+        # document. A rejected large composite therefore remains untouched.
+        self._push(patch)
+        self._sequence += 1
+        self._adopt(result, ids)
+        self.state = patch.next_state
+        if added:
+            self._next_channel_id += 1
+        return True
+
+    def set_layer_visibility(self, index: int, visible: bool) -> bool:
+        state = self.document.layer_state
+        if state is None or not isinstance(index, int) or isinstance(index, bool) or index not in state.order:
+            raise ValueError("Choose a valid Photoshop layer")
+        if not isinstance(visible, bool):
+            raise ValueError("Layer visibility must be true or false")
+        shown = set(state.visible)
+        shown.add(index) if visible else shown.discard(index)
+        return self._layer_change(layerediting.LayerState(state.order, frozenset(shown)))
+
+    def move_layer(self, index: int, delta: int) -> int:
+        state = self.document.layer_state
+        if state is None or not isinstance(index, int) or isinstance(index, bool) or index not in state.order:
+            raise ValueError("Choose a valid Photoshop layer")
+        if not isinstance(delta, int) or isinstance(delta, bool) or delta not in (-1, 1):
+            raise ValueError("Move a layer up or down by one position")
+        position = state.order.index(index)
+        target = position + delta
+        if not 0 <= target < len(state.order):
+            return index
+        order = list(state.order)
+        order[position], order[target] = order[target], order[position]
+        self._layer_change(layerediting.LayerState(tuple(order), state.visible))
+        return index
+
     def apply(self, channel: int, bounds, coverage: np.ndarray, shade: int, invert: bool = False):
         doc = self.document
         if doc.bits not in (8, 16) or doc.color_mode == "Palette":
@@ -315,12 +424,14 @@ class EditSession:
     def undo(self):
         if self.can_undo:
             patch = self.history[self.cursor - 1]
-            if isinstance(patch, StructuralPatch):
+            if isinstance(patch, LayerPatch):
+                self._restore_layer_patch(patch, forward=False)
+            elif isinstance(patch, StructuralPatch):
                 layout = patch.before
                 document = spots.restore_layout(self.document, layout.channels, layout.resources,
                                                 layout.metadata, patch.reverse_order, patch.deleted_plane,
                                                 layout.warnings)
-                self._adopt(document, layout.channel_ids)
+                self._adopt(replace(document, layer_state=layout.layer_state), layout.channel_ids)
             else:
                 self._write(patch, patch.before)
             self.cursor -= 1
@@ -329,13 +440,37 @@ class EditSession:
     def redo(self):
         if self.can_redo:
             patch = self.history[self.cursor]
-            if isinstance(patch, StructuralPatch):
+            if isinstance(patch, LayerPatch):
+                self._restore_layer_patch(patch, forward=True)
+            elif isinstance(patch, StructuralPatch):
                 layout = patch.after
                 document = spots.restore_layout(self.document, layout.channels, layout.resources,
                                                 layout.metadata, patch.forward_order, patch.added_plane,
                                                 layout.warnings)
-                self._adopt(document, layout.channel_ids)
+                self._adopt(replace(document, layer_state=layout.layer_state), layout.channel_ids)
             else:
                 self._write(patch, patch.after)
             self.cursor += 1
             self.state = patch.next_state
+
+    def _restore_layer_patch(self, patch: LayerPatch, forward: bool):
+        layout = patch.after if forward else patch.before
+        order = None
+        if patch.added_plane is not None:
+            count = len(patch.before.channels)
+            order = (*range(count), None) if forward else tuple(range(count))
+        document = spots.restore_layout(self.document, layout.channels, layout.resources,
+                                        layout.metadata, order, patch.added_plane if forward else None,
+                                        layout.warnings)
+        self._adopt(replace(document, layer_state=layout.layer_state), layout.channel_ids)
+        if patch.pixels is not None:
+            self._write(patch.pixels, patch.pixels.after if forward else patch.pixels.before)
+        if self.document.metadata.get("layer_composite_applied"):
+            self.document = replace(self.document, layer_merged_samples=self.document.samples,
+                                    layer_merged_transparency=next((c.index for c in self.document.channels
+                                                                    if c.kind == "Transparency"), None))
+            # Future painting must preserve the immutable proof array. It is
+            # shared with this restored image and is never held in history.
+            self._samples = None
+        else:
+            self.document = replace(self.document, layer_merged_samples=None, layer_merged_transparency=None)

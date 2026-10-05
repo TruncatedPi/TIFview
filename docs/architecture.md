@@ -1,4 +1,4 @@
-# Channel viewer and pixel-editor architecture
+# Channel/layer viewer and pixel-editor architecture
 
 The prototype uses a local Python / PySide6 Essentials app (Python 3.12 minimum;
 Windows CI tests 3.12/3.13). The UI and
@@ -10,10 +10,13 @@ TIFF -> tifffile + imagecodecs -> immutable H × W × samples array
                   +-> primary IFD tags + Photoshop ImageResources
                        -> psdtags + bounded DisplayInfo interpretation
                        -> names, types, colour values, saved solidity
+                  +-> lazy Photoshop ImageSourceData layer records
+                       -> cached native layer pixels + original compressed chunks
 
 ImageDocument -> display-only orientation / 8-bit preview -> Qt image view
               -> read-only inventory + current pixel-value inspection
               -> copy on first edit -> selected-plane raster patches -> undo/redo
+              -> layer visibility/order -> native merged recomposition -> undo/redo
                                     -> TIFF copy -> reopen/verify -> publish
 ```
 
@@ -32,7 +35,8 @@ was not established. No claim is made that they cannot do it.
 
 The Adobe ImageResources TIFF tag is **34377**. Photoshop ImageSourceData,
 including layers, is **37724**, which the viewer detects without loading those
-layer pixels. The primary TIFF IFD supplies the merged image and extra samples.
+layer pixels during initial image import. Opening the Layers tab starts a separate
+lazy reader. The primary TIFF IFD supplies the merged image and extra samples.
 
 - Resource **1045**: Unicode extra-channel names, preferred over **1006** Pascal names.
 - Resource **1077**: version 1 DisplayInfo, 13-byte records: colour space,
@@ -130,12 +134,17 @@ dialog explains this, and the original TIFF remains untouched. Empty TIFFs with
 no image directories fail with an actionable error instead of an IndexError.
 
 Photoshop ImageSourceData is kept as an opaque byte block for spot/saved-mask
-edits to little-endian files. This retains unknown layer tags and existing RLE
-or ZIP data without decode/reserialize losses. Process or transparency changes
-would make the original layer composite stale, so the UI disables layer
-retention and explicitly offers a merged copy with every channel. Big-endian
+edits to little-endian files when visibility/order does not change. This retains
+unknown layer tags and existing RLE or ZIP data without decode/reserialize losses.
+Supported layer visibility/order changes rewrite record order and visibility
+flags while retaining compressed channel chunks and opaque data; their merged
+process/transparency samples are regenerated in native bit depth. Direct painting
+of process or image-transparency channels would make the original layer composite
+stale, so the UI disables layer retention and explicitly offers a merged copy
+with every channel. Big-endian
 layer blocks currently require the same merged-copy option because the export
-preset uses IBM-PC byte order. Layer-aware editing/recomposition is future work.
+preset uses IBM-PC byte order. Painting the pixels inside a Photoshop layer is
+future work.
 
 The original path and hardlink aliases cannot be export destinations. The source
 file's stat signature must still match the opened document. A temporary TIFF is
@@ -190,6 +199,55 @@ the exact neutral black/white defaults (`0000ffff0000ffff`). These records do no
 restrict blending; no layer payload is rewritten or normalized. Supported
 layer bytes are copied verbatim. Both supplied blocks pass this check.
 These internal checks do not establish a new Photoshop/PrintExp round trip.
+
+## Layer inspection, visibility and order
+
+`layers.py` reads bounded ImageSourceData headers and channel spans without
+interpreting opaque descriptor payloads. `Layer.index` is a stable source-record
+identity; public order lists are top first, while TIFF layer records are stored
+bottom first. The Layers tab preserves selected identities across changes and
+undo/redo. Individual previews show cached layer pixels on the original canvas
+even when their visibility checkbox is off. Painting remains a Channels operation.
+
+Layer records are loaded lazily. Channel pixels decode only when a preview or
+recomposition needs them, with a bounded cache and decoded-memory checks.
+Large previews run in background jobs. Supported RAW, RLE and ZIP layer samples
+are converted to native TIFF polarity for RGB/CMYK/grayscale rendering; screen
+ICC conversion still happens only after native compositing.
+
+The conservative compositor handles ordinary Normal layers, opacity and simple
+unfeathered bitmap masks. Text and smart-object layers can use their saved raster
+pixels while their editable records remain opaque. Adjustment/fill layers,
+effects, clipping, groups, custom blend modes/Blend If ranges, feathered/vector
+masks and other unsupported dependencies carry explicit reasons. Unsupported
+visible layers block relevant changes and saves instead of being approximated.
+Hidden unsupported records can remain untouched; groups block stack recomposition
+even when hidden. An individual preview can show available cached pixels with
+its limitations, but does not synthesize unsupported effects or adjustments.
+
+A supported visibility/order operation produces native process samples and an
+unassociated alpha plane in stored orientation. The edit session maps these back
+to the existing primary-image layout, including association with TIFF transparency
+where required. Spot and saved-alpha planes keep their native values. Layer state
+and resulting sample changes participate in the same undo/redo history and save
+checkpoint as channel operations. A rejected operation leaves accepted state intact.
+
+Before the first edit to a supported baseline, its recomposed native process and
+existing transparency samples must exactly reproduce the authoritative original
+primary image. A mismatch blocks editing with a reason rather than publishing an
+approximate replacement. The result is cached against the original sample array.
+An explicit hide of unsupported baseline appearance features is still allowed
+when the resulting visible stack is supported; this deliberately changes those
+features instead of approximating their previous appearance. Groups remain blocked.
+
+Layer rewriting moves each original record with its original compressed channel
+chunks, toggles only the requested hidden flag, and preserves the remainder of
+ImageSourceData. It does not rasterize text into the stored layer, decode/resave
+compressed layer pixels, or normalize opaque Photoshop tags. Export verifies the
+rewritten block and the synchronized native primary pixels in the new TIFF copy.
+The original remains untouched. This feature still needs independent Photoshop
+and PrintExp verification; internal read-back does not establish matching Photoshop
+compositing or production compatibility.
 
 ## Large-image previews
 

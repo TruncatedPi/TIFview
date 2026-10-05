@@ -22,6 +22,13 @@ Shade 0 paints black (normally ink on spots), 255 paints white for 8-bit images;
 Save uses LZW, interleaved samples, IBM-PC byte order, transparency and a pyramid.
 Spot/saved-mask edits can retain original Photoshop layers. Process/transparency
 edits require a merged copy without layers; review the save dialog.
+The Layers tab shows individual saved layer pixels. Its checkboxes and Move
+up/down controls change visibility/order in a saved TIFF copy, retaining layer
+pixels and updating the native merged image. These changes support undo/redo.
+Ordinary Normal raster layers and simple bitmap masks are supported; unsupported
+adjustments, effects, groups, blend modes or feathered/vector masks show a reason
+and block changes that cannot be saved faithfully. Inspect cached pixels where
+available. Layer changes need a new Photoshop/PrintExp check before production.
 Content Credentials metadata does not block TIFF saving. Credentials are omitted
 from saved copies because this app cannot update their signature after editing.
 

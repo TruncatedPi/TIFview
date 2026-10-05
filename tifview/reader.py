@@ -86,6 +86,16 @@ def _channels(mode: str, count: int, extra_types: list[int], resources: bytes | 
     return channels
 
 
+_MAX_PIXELS = 40_000_000
+_MAX_DECODED_BYTES = 512 * 2**20
+
+
+def _check_image_limits(pixels: int, decoded_bytes: int = 0):
+    if pixels > _MAX_PIXELS or decoded_bytes > _MAX_DECODED_BYTES:
+        raise UnsupportedImageError(
+            "Image exceeds the 40-million-pixel or 512 MiB decoded limit.")
+
+
 def _load_tiff(path: Path) -> ImageDocument:
     warnings = []
     with tifffile.TiffFile(path, mode="r") as tif:
@@ -109,10 +119,7 @@ def _load_tiff(path: Path) -> ImageDocument:
             raise UnsupportedImageError("Only unsigned integer TIFF samples are supported.")
         pixels = int(page.imagelength) * int(page.imagewidth)
         decoded_bytes = pixels * int(page.samplesperpixel) * (2 if bits == 16 else 1)
-        if decoded_bytes > 512 * 2**20 or pixels > 40_000_000:
-            raise UnsupportedImageError("This prototype holds the full image in memory. Its current limit "
-                                        "is 40 million pixels or 512 MiB of decoded samples. Use a smaller "
-                                        "test copy; tiled large-file viewing is planned.")
+        _check_image_limits(pixels, decoded_bytes)
         data = page.asarray()  # No RGB conversion; retain every primary IFD sample.
         h, w, count = page.imagelength, page.imagewidth, page.samplesperpixel
         if count < len(PROCESS[mode]):
@@ -168,9 +175,29 @@ def _load_tiff(path: Path) -> ImageDocument:
 
 def _load_common(path: Path) -> ImageDocument:
     with Image.open(path) as image:
+        _check_image_limits(image.width * image.height)
         warnings = []
         if getattr(image, "n_frames", 1) > 1:
             warnings.append("Only the first frame is shown.")
+        raw_dpi = image.info.get("dpi")
+        try:
+            dpi = tuple(map(float, raw_dpi)) if raw_dpi is not None else ()
+        except (TypeError, ValueError):
+            dpi = ()
+        if len(dpi) != 2 or not all(np.isfinite(value) and value > 0 for value in dpi):
+            if raw_dpi is not None:
+                warnings.append(f"Invalid image resolution metadata {raw_dpi!r}; defaulting to uncalibrated display.")
+            dpi = None
+        if dpi:
+            try:
+                exif_orientation = image.getexif().get(274, 1)
+            except Exception:
+                exif_orientation = 1
+            if exif_orientation in (5, 6, 7, 8):
+                dpi = dpi[::-1]
+        transparency_key = image.info.get("transparency")
+        if image.mode == "1" and transparency_key is not None:
+            transparency_key = 255 if transparency_key else 0
         image = ImageOps.exif_transpose(image)
         icc = image.info.get("icc_profile")
         if image.mode == "P":
@@ -194,6 +221,14 @@ def _load_common(path: Path) -> ImageDocument:
             raise UnsupportedImageError(f"Image mode {image.mode} is not supported.")
         if data.ndim == 2:
             data = data[..., None]
+        if transparency_key is not None and not extras and mode in ("RGB", "Gray"):
+            transparent = np.all(data == transparency_key, axis=-1)
+            alpha = np.full(data.shape[:2], np.iinfo(data.dtype).max,
+                            dtype=data.dtype)
+            alpha[transparent] = 0
+            data = np.concatenate((data, alpha[..., None]), axis=-1)
+            extras = [2]
+        _check_image_limits(data.shape[0] * data.shape[1], data.nbytes)
         channels = _channels(mode, data.shape[-1], extras, None, warnings)
         if icc:
             warnings.append("Embedded ICC is used for sRGB preview when supported; monitor profiling is not implemented.")
@@ -201,5 +236,5 @@ def _load_common(path: Path) -> ImageDocument:
             warnings.append("CMYK composite uses an approximate unmanaged preview.")
         return ImageDocument(path, data, channels, mode, len(PROCESS[mode]),
                              16 if data.dtype.itemsize == 2 else 8, icc_profile=icc,
-                             metadata={"backend": "Pillow", "icc_bytes": len(icc) if icc else 0},
+                             metadata={"backend": "Pillow", "icc_bytes": len(icc) if icc else 0, "dpi": dpi},
                              warnings=warnings)

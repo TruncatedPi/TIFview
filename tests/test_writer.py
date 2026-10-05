@@ -1,11 +1,12 @@
 """Saved TIFF copies must retain printing channels and important metadata."""
+from fractions import Fraction
 import hashlib
 import os
 import struct
 
 import numpy as np
 import pytest
-from PIL import ImageCms
+from PIL import Image, ImageCms
 from psdtags import (PsdChannel, PsdChannelId, PsdCompressionType, PsdFormat,
                      PsdKey, PsdLayer, PsdLayers, PsdRectangle, PsdUserMask, TiffImageSourceData)
 import tifffile
@@ -172,3 +173,109 @@ def test_thumbnail_only_resource_tag_can_be_removed_after_process_edit(tmp_path)
     reopened = load_image(target)
     assert reopened.photoshop_resources is None
     np.testing.assert_array_equal(reopened.samples, session.document.samples)
+
+
+def test_common_format_export_preserves_dpi(tmp_path):
+    # 1. JPEG export with 360 DPI
+    jpg_path = tmp_path / "photo360.jpg"
+    Image.new("RGB", (8, 12), (10, 50, 90)).save(jpg_path, dpi=(360, 360))
+    doc_jpg = load_image(jpg_path)
+    assert doc_jpg.metadata["dpi"] == (360.0, 360.0)
+    target_jpg = tmp_path / "exported_jpg.tif"
+    save_tiff_copy(doc_jpg, doc_jpg, target_jpg)
+    reopened_jpg = load_image(target_jpg)
+    np.testing.assert_array_equal(reopened_jpg.samples, doc_jpg.samples)
+    with tifffile.TiffFile(target_jpg) as tif:
+        page = tif.pages[0]
+        res = (page.tags.valueof(282), page.tags.valueof(283))
+        assert (Fraction(*res[0]), Fraction(*res[1])) == (Fraction(360, 1), Fraction(360, 1))
+        assert int(page.tags.valueof(296)) == 2
+
+    # 2. PNG export with 360 DPI
+    png_path = tmp_path / "photo360.png"
+    Image.new("RGB", (8, 12), (10, 50, 90)).save(png_path, dpi=(360, 360))
+    doc_png = load_image(png_path)
+    target_png = tmp_path / "exported_png.tif"
+    save_tiff_copy(doc_png, doc_png, target_png)
+    with tifffile.TiffFile(target_png) as tif:
+        page = tif.pages[0]
+        res = (page.tags.valueof(282), page.tags.valueof(283))
+        expected = Fraction(str(doc_png.metadata["dpi"][0])).limit_denominator(1_000_000)
+        assert Fraction(*res[0]) == expected
+        assert abs(float(Fraction(*res[0])) - 360) < 0.01
+
+    # 3. Fractional DPI export
+    frac_path = tmp_path / "frac.png"
+    Image.new("RGB", (6, 6), (10, 50, 90)).save(frac_path)
+    doc_frac = load_image(frac_path)
+    doc_frac.metadata["dpi"] = (144.5, 289.0)
+    target_frac = tmp_path / "frac.tif"
+    save_tiff_copy(doc_frac, doc_frac, target_frac)
+    with tifffile.TiffFile(target_frac) as tif:
+        page = tif.pages[0]
+        res = (page.tags.valueof(282), page.tags.valueof(283))
+        assert (Fraction(*res[0]), Fraction(*res[1])) == (Fraction(289, 2), Fraction(289, 1))
+
+    # 4. Rotated non-square DPI export: EXIF orientation 6 (90 CW)
+    exif = Image.Exif()
+    exif[274] = 6
+    rot_path = tmp_path / "rotated.jpg"
+    Image.new("RGB", (20, 10), (10, 50, 90)).save(rot_path, dpi=(300, 150), exif=exif)
+    doc_rot = load_image(rot_path)
+    assert doc_rot.metadata["dpi"] == (150.0, 300.0)
+    target_rot = tmp_path / "rotated.tif"
+    save_tiff_copy(doc_rot, doc_rot, target_rot)
+    with tifffile.TiffFile(target_rot) as tif:
+        page = tif.pages[0]
+        res = (page.tags.valueof(282), page.tags.valueof(283))
+        assert (Fraction(*res[0]), Fraction(*res[1])) == (Fraction(150, 1), Fraction(300, 1))
+
+    # 5. Image with no DPI defaults to 72 DPI
+    nodpi_path = tmp_path / "nodpi.png"
+    Image.new("RGB", (4, 4), (10, 50, 90)).save(nodpi_path)
+    doc_nodpi = load_image(nodpi_path)
+    assert doc_nodpi.metadata["dpi"] is None
+    target_nodpi = tmp_path / "nodpi.tif"
+    save_tiff_copy(doc_nodpi, doc_nodpi, target_nodpi)
+    with tifffile.TiffFile(target_nodpi) as tif:
+        page = tif.pages[0]
+        res = (page.tags.valueof(282), page.tags.valueof(283))
+        assert (Fraction(*res[0]), Fraction(*res[1])) == (Fraction(72, 1), Fraction(72, 1))
+
+    # 6. Edited common-format image can be saved and preserves DPI
+    session = EditSession(doc_jpg)
+    session.apply(0, (1, 1, 4, 4), np.full((3, 3), 200, np.uint8), 200)
+    target_edited = tmp_path / "edited_jpg.tif"
+    save_tiff_copy(doc_jpg, session.document, target_edited)
+    reopened_edited = load_image(target_edited)
+    np.testing.assert_array_equal(reopened_edited.samples, session.document.samples)
+    with tifffile.TiffFile(target_edited) as tif:
+        res = (tif.pages[0].tags.valueof(282), tif.pages[0].tags.valueof(283))
+        assert (Fraction(*res[0]), Fraction(*res[1])) == (Fraction(360, 1), Fraction(360, 1))
+
+
+def test_common_format_export_preserves_png_transparency(tmp_path):
+    # RGB PNG with colour-key transparency
+    im_rgb = Image.new("RGB", (4, 4), (10, 20, 30))
+    im_rgb.putpixel((0, 0), (255, 0, 0))
+    png_path = tmp_path / "trans.png"
+    im_rgb.save(png_path, transparency=(255, 0, 0), dpi=(300, 300))
+    doc_rgb = load_image(png_path)
+    target_rgb = tmp_path / "trans.tif"
+    save_tiff_copy(doc_rgb, doc_rgb, target_rgb)
+    reopened_rgb = load_image(target_rgb)
+    np.testing.assert_array_equal(reopened_rgb.samples, doc_rgb.samples)
+    assert reopened_rgb.channels[3].kind == "Transparency"
+    assert not reopened_rgb.channels[3].associated
+
+    # 16-bit Grayscale PNG with colour-key transparency
+    arr16 = np.array([[1000, 2000], [3000, 4000]], dtype=np.uint16)
+    png16_path = tmp_path / "trans16.png"
+    Image.fromarray(arr16).save(png16_path, format="PNG", transparency=2000, dpi=(300, 300))
+    doc_16 = load_image(png16_path)
+    target_16 = tmp_path / "trans16.tif"
+    save_tiff_copy(doc_16, doc_16, target_16)
+    reopened_16 = load_image(target_16)
+    assert reopened_16.bits == 16
+    np.testing.assert_array_equal(reopened_16.samples, doc_16.samples)
+    assert reopened_16.channels[1].kind == "Transparency"

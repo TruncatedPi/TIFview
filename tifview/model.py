@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from .photoshop import DisplayInfo
+
+if TYPE_CHECKING:
+    from .layerediting import LayerState
+    from .layers import LayerStack
 
 
 @dataclass(frozen=True)
@@ -53,6 +58,10 @@ class ImageDocument:
     metadata: dict = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     icc_transform: object | None = field(default=None, repr=False)
+    layer_stack: LayerStack | None = field(default=None, repr=False)
+    layer_state: LayerState | None = None
+    layer_merged_samples: np.ndarray | None = field(default=None, repr=False)
+    layer_merged_transparency: int | None = None
 
     def __post_init__(self):
         self.samples.flags.writeable = False
@@ -115,4 +124,12 @@ class ImageDocument:
                               "mode": c.display.mode, "opacity_or_solidity": c.display.opacity,
                           }} for c in self.channels],
             "warnings": self.warnings,
+            "layers": None if self.layer_stack is None else {
+                "order_top_first": list(self.layer_state.order),
+                "visible_source_indices": sorted(self.layer_state.visible),
+                "records": [{"source_index": layer.index, "name": layer.name,
+                             "kind": layer.kind, "bounds": list(layer.bounds),
+                             "blend_mode": layer.blend_mode, "opacity": layer.opacity,
+                             "issues": list(layer.issues)} for layer in self.layer_stack.layers],
+            },
         }

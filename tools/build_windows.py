@@ -72,6 +72,7 @@ def main():
     if report.exists():
         report.unlink()
     report.with_name(report.stem + "-edited.tif").unlink(missing_ok=True)
+    report.with_name(report.stem + "-layers.tif").unlink(missing_ok=True)
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
     # No source checkout or Python command is involved in the frozen smoke test.
     subprocess.run([str(bundle / "TIFview.exe"), "--smoke-test", str(fixture), str(report)],
