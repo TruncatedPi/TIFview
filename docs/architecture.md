@@ -275,3 +275,37 @@ matching document generation/settings. Load-time old-file controls cannot start
 previews. Edit/save operations are disabled until a running preview finishes or
 cancels, preventing reads during in-place edits; channel selection/pan/zoom remain
 available. Closing cancels a preview safely before the normal unsaved-edit check.
+
+
+## Basic vector support (v0.5.0)
+
+`psvectors.py` selectively reads bounded vector-mask paths and solid content/
+stroke descriptors using Adobe's file-format specification. Unknown descriptors
+stay opaque. The layer parser never deserializes all Photoshop metadata, and
+rewriting still moves original record/channel chunks with only visibility-bit
+changes. Supported shapes use QPainterPath and bounded coverage bands, retaining
+native 8/16-bit process colours; they are not imported through an RGB flatten.
+Closed additive solid shapes are admitted only when their colour space matches
+the TIFF. Complex masks, fills and styles stay unsupported. Original visible
+baselines still require exact native agreement; antialiasing mismatches block
+editing rather than silently replacing appearance.
+
+`svg.py` uses the Qt SVG module already provided by PySide6 Essentials. It admits
+self-contained static geometry with explicit physical page dimensions, bounded
+XML/geometry, validated paths/transforms and understood inline styles. Qt ignores
+SVG clipping/nested viewports, so clipping and out-of-page geometry are rejected
+on import. Export expresses the viewport mapping as ordinary affine groups,
+without raster images or clipping dependencies. The CSS/SVG 96 px/in rule maps
+unitless/px pages; image DPI separately maps millimetres into displayed samples.
+
+The QGraphicsItem remains a vector at each zoom. The Vectors panel has separate
+bounded placement history; the active tab selects SVG versus image undo/redo.
+The versioned JSON job embeds SVG plus placement and binds it to an image hash,
+dimensions and calibrated DPI. It stores no image edits. An atomic separate SVG
+export uses the image's physical page size. Original TIFF/SVG inputs are protected.
+TIFF output retains the existing channel/layer workflow and does not contain the
+imported SVG. Real vector-copy/cutter validation remains a separate milestone.
+
+References: [Adobe Photoshop formats](https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/),
+[Qt SVG rendering](https://doc.qt.io/qt-6.11/qsvgrenderer.html), and
+[SVG viewport units](https://www.w3.org/TR/SVG2/coords.html#Units).

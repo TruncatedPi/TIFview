@@ -1,4 +1,4 @@
-TIFview 0.4.3 - printing image/channel/layer viewer and pixel editor
+TIFview 0.5.0 - printing image/channel/layer viewer, SVG alignment and pixel editor
 
 Windows 10/11, 64-bit (x64).
 
@@ -33,6 +33,20 @@ Ordinary Normal raster layers and simple bitmap masks are supported; unsupported
 adjustments, effects, groups, blend modes or feathered/vector masks show a reason
 and block changes that cannot be saved faithfully. Inspect cached pixels where
 available. The user validated the layer test copies in Photoshop and PrintExp.
+Solid Photoshop vector shapes can render from closed additive paths, with native
+solid fill/stroke colours, physical stroke widths and inside/outside alignment.
+Original vector records stay editable in saved TIFF copies. New vector-copy
+Photoshop/PrintExp validation is pending; complex vectors/masks remain limited.
+
+Vectors > Import SVG: overlay one self-contained SVG at its physical size.
+Use the Vectors tab to position/size in mm, rotate, or show/hide the overlay.
+Ctrl+Z/Y in that tab undo/redo alignment. Text must be converted to paths;
+images, effects, clipping, clones, stylesheets and cropped geometry are unsupported.
+Save alignment job keeps SVG/placement in a separate .tifview.json. Open the
+associated TIFF first, then Open alignment job. Export aligned SVG keeps vectors
+on a page matching the TIFF's print size. The overlay is not added to TIFF pixels.
+Save TIFF edits first, then save the alignment job to associate with that copy.
+The first SVG workflow is tested synthetically; real print/cut validation is pending.
 Content Credentials metadata does not block TIFF saving. Credentials are omitted
 from saved copies because this app cannot update their signature after editing.
 

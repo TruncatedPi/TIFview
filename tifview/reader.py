@@ -153,7 +153,20 @@ def _load_tiff(path: Path) -> ImageDocument:
             warnings.append("Photoshop layer data is present. This prototype inspects primary IFD "
                             "channels and the saved composite; layer-internal masks are not listed.")
         icc = page.tags.valueof(34675)
+        dpi = None
+        unit = int(page.tags.valueof(296, 1))
+        if unit in (2, 3) and 282 in page.tags and 283 in page.tags:
+            try:
+                dpi = tuple(float(n) / float(d) * (2.54 if unit == 3 else 1)
+                            for n, d in (page.tags.valueof(282), page.tags.valueof(283)))
+                if not all(np.isfinite(value) and value > 0 for value in dpi):
+                    dpi = None
+                elif orientation >= 5:
+                    dpi = dpi[::-1]
+            except (ValueError, TypeError, ZeroDivisionError):
+                dpi = None
         metadata = {"photometric": page.photometric.name, "compression": page.compression.name,
+                    "dpi": dpi,
                     "planar_configuration": tifffile.PLANARCONFIG(page.planarconfig).name,
                     "byte_order": "IBM PC (little endian)" if tif.byteorder == "<" else "Macintosh (big endian)",
                     "pyramid_subifds": len(page.subifds or ()),

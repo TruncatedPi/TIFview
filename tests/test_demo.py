@@ -21,6 +21,7 @@ def test_generated_fixture_loads_named_channel_pixels(tmp_path, existing):
     document = load_image(target)
     assert document.samples.shape == (500, 720, 6)
     assert document.samples.dtype == np.uint8
+    assert document.metadata["dpi"] == (360, 360)
     assert [channel.name for channel in document.channels] == [
         "Red", "Green", "Blue", "White Ink", "Varnish", "Saved selection",
     ]

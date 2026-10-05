@@ -1,4 +1,4 @@
-# TIFview 0.4.3
+# TIFview 0.5.0
 
 [![Windows checks](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml/badge.svg)](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml)
 
@@ -36,7 +36,7 @@ the other spots; click **Composite** to return to the colour image.
 **Windows 10/11, 64-bit (x64). Python is included in the portable download.**
 
 1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
-2. Download [**TIFview-0.4.3-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.4.3/TIFview-0.4.3-windows-x64.zip) and extract the entire ZIP.
+2. Download [**TIFview-0.5.0-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.5.0/TIFview-0.5.0-windows-x64.zip) and extract the entire ZIP.
 3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
 
 Keep the `_internal` folder with the executable. No Python installation, Git,
@@ -137,7 +137,8 @@ their compressed pixels, and only the requested visibility flags change.
 The original TIFF remains untouched.
 
 This first layer compositor supports ordinary **Normal** raster layers,
-opacity and simple unfeathered bitmap masks. Text and smart objects use their
+opacity, simple unfeathered bitmap masks, and a subset of solid vector shapes.
+Text and smart objects use their
 saved raster previews; their editable Photoshop records are preserved.
 Adjustment/fill layers, effects, groups, clipping, custom blend modes/Blend If,
 and feathered/vector masks are not reproduced. A warning explains which feature
@@ -145,6 +146,19 @@ blocks a stack change or save. Hidden unsupported layers can be retained without
 being rendered; groups currently block stack recomposition even when hidden.
 An individual cached-pixel preview can still be useful, but does not apply
 unsupported adjustments or effects and is labelled accordingly.
+
+**Solid vector shapes** can render directly from Photoshop's closed, additive
+Bézier paths, including shapes with no cached raster pixels. Supported fills
+and solid strokes retain native RGB/CMYK/grayscale colour values when their
+colour space matches the TIFF; incompatible colour spaces are reported rather
+than guessed. Stroke width, enable flags, opacity, joins, caps, and centre/inside/
+outside alignment are interpreted. Dashed strokes, gradient/pattern fills,
+vector masks on raster layers, and more complex shape operations remain unsupported.
+Visibility/order changes keep the original editable vector descriptors intact;
+TIFview rasterizes the supported shape only into the TIFF's merged process preview.
+The supplied hidden rectangle now displays and can be shown/reordered in copies.
+Its new vector test copies have native-data checks; **Photoshop/PrintExp validation
+of these new copies is pending**. Antialiased edges can differ from Photoshop.
 
 Before editing an otherwise supported stack, TIFview checks that its baseline
 recomposition exactly matches the original native process/transparency samples.
@@ -165,6 +179,46 @@ Pixel drawing remains in the **Channels** tab; painting underlying layer pixels
 is not implemented. The user validated both layer visibility/order test copies
 in **Photoshop and PrintExp** on the shop PC. This confirms the tested sample
 workflow; unsupported layer features remain subject to the restrictions above.
+
+## Align TIFF and SVG for print-and-cut
+
+Open an image, then use **Vectors → Import SVG** or the **Vectors** tab. This
+first version supports one self-contained SVG overlay with paths, rectangles,
+ellipses/circles, lines and polygons, including ordinary group transforms and
+inline fill/stroke styles. The overlay remains a vector at every zoom.
+
+- Position **X/Y** in millimetres from the displayed image's top-left corner.
+- Set width/height in millimetres; **Keep SVG proportions** starts enabled.
+- Rotation is clockwise about the SVG viewport's top-left corner.
+- **Show SVG overlay** is a viewing control. Hide it to inspect image channels.
+- **Ctrl+Z/Ctrl+Y** in the Vectors tab undo/redo alignment; in Channels/Layers
+  they continue to undo/redo image edits.
+- **Save alignment job** writes a separate `.tifview.json` with the SVG and its
+  placement, bound to the associated image's checksum, dimensions and DPI.
+  Open that image first, then **Open alignment job** to restore it. The SVG is
+  embedded in the job, so its original file is not required to reopen it.
+- **Export aligned SVG** writes vector paths on a page matching the displayed
+  image's physical size. It includes the SVG even when the overlay is hidden.
+
+TIFF resolution in inches/centimetres and common-format DPI supply physical
+calibration, including rotated images and non-square DPI. Images with no valid
+physical resolution cannot use alignment; set their print DPI in Photoshop.
+SVG mm/cm/in/pt/pc sizes are retained; px/unitless dimensions use SVG's 96 px/in
+definition. A viewBox-only or percentage-sized SVG needs explicit page dimensions.
+
+Convert SVG text to outlines before import. Embedded images, effects, gradients,
+CSS stylesheets/classes, clipping masks, clone/use instances and geometry that
+extends beyond its SVG page are rejected with an explanation. Export/preview
+alignment is tested with synthetic files, including rotation, viewport offsets,
+aspect ratios and anisotropic DPI. **A real TIFF/SVG pair and cutter workflow
+have not yet been validated.** SVG artwork is not burned into image pixels or
+turned into a Photoshop shape layer in this milestone.
+
+**Save TIFF copy** saves channel/layer changes separately; it does not include
+the SVG overlay. If you edit the TIFF too, save the TIFF copy first and then
+save the alignment job: the job associates with that most recently saved copy.
+Further image edits require saving a new TIFF and alignment job. Jobs do not
+store unsaved channel/layer edits. Originals stay untouched.
 
 ## Manage spot channels
 
@@ -352,6 +406,7 @@ See [architecture and resource rules](docs/architecture.md).
 
 1. **Current:** channel and cached-layer inspection, supported layer visibility/order,
    spot creation/deletion/reordering/properties, ellipse/box/line/text raster edits, undo/redo,
+   solid Photoshop shape rendering, SVG alignment/jobs/vector export,
    verified TIFF-copy export and portable Windows packaging. Validate edited
    copies on more Photoshop/RIP configurations and collect more real save variants.
 2. **Planned:** layer-aware process editing and tiled loading beyond the current RAM limits.

@@ -70,6 +70,7 @@ def make_demo(path: Path, layers: bool = False):
     temporary = Path(temporary_name)
     try:
         tifffile.imwrite(temporary, data, photometric="rgb", extrasamples=[0, 0, 0],
+                         resolution=(360, 360), resolutionunit="INCH",
                          compression="lzw", metadata=None, description="SYNTHETIC fixture - not saved by Photoshop",
                          iccprofile=profile, extratags=tags)
         os.replace(temporary, path)

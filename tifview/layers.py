@@ -1,6 +1,7 @@
 """Bounded, lazy access to Photoshop TIFF layer records and cached pixels.
 
-Opaque tagged descriptors are never parsed or serialized. The original layer
+Only bounded solid-shape descriptors are interpreted. Other tagged descriptors
+stay opaque, and descriptors are never serialized. The original layer
 records and compressed channel chunks remain byte-for-byte intact, apart from
 the visibility flag when explicitly requested. Layer records in Photoshop TIFF
 tag 37724 are stored bottom first; all public ordering arguments are top first.
@@ -23,6 +24,7 @@ import tifffile
 from .model import Channel, ImageDocument, orient
 from .reader import file_signature
 from .render import render
+from .psvectors import Shape, VectorError, read_shape
 
 
 _SIGNATURE = b"Adobe Photoshop Document Data Block\0"
@@ -137,14 +139,20 @@ class Layer:
     _flags: int
     _channel_sizes: tuple[int, ...]
     _channel_spans: tuple[tuple[int, int], ...] = ()
+    vector: Shape | None = None
+    _vector_bounds: tuple[int, int, int, int] | None = None
+
+    @property
+    def paint_bounds(self):
+        return self._vector_bounds if self.vector is not None else self.bounds
 
     @property
     def width(self):
-        return self.bounds[3] - self.bounds[1]
+        return self.paint_bounds[3] - self.paint_bounds[1]
 
     @property
     def height(self):
-        return self.bounds[2] - self.bounds[0]
+        return self.paint_bounds[2] - self.paint_bounds[0]
 
     @property
     def has_pixels(self):
@@ -397,7 +405,7 @@ class LayerStack:
             extra.take((-(name_size + 1)) % 4)
             tags = _tags(extra, 2)
             keys = {tag.key for tag in tags}
-            layer_id, kind, issues = None, "Raster", []
+            layer_id, kind, issues, vector = None, "Raster", [], None
             for nested in tags:
                 value = memoryview(self.data)[nested.payload_start:nested.payload_end]
                 if nested.key == b"luni":
@@ -426,12 +434,24 @@ class LayerStack:
                     issues.append("restricted channel blending")
                 elif nested.key == b"knko" and any(value):
                     issues.append("layer knockout")
-            if keys & _ADJUSTMENTS:
+            if keys & _VECTORS:
+                kind = "Vector / shape"
+                try:
+                    if len([tag.key for tag in tags if tag.key in _VECTORS | {b"SoCo"}]) != len(keys & (_VECTORS | {b"SoCo"})):
+                        raise VectorError("duplicate vector descriptors")
+                    if keys & (_ADJUSTMENTS - {b"SoCo"}) or b"TySh" in keys:
+                        raise VectorError("non-solid vector content")
+                    if mask is not None and not mask.disabled:
+                        raise VectorError("shape combined with a raster mask")
+                    vector = read_shape({tag.key: memoryview(self.data)[tag.payload_start:tag.payload_end]
+                                         for tag in tags if tag.key in _VECTORS | {b"SoCo"}},
+                                        self.byteorder, self.parent.color_mode)
+                    kind = "Vector shape"
+                except (VectorError, KeyError, TypeError, ValueError, IndexError) as exc:
+                    issues.append(f"vector masks or shapes ({exc})")
+            elif keys & _ADJUSTMENTS:
                 kind = "Adjustment / fill"
                 issues.append("adjustment or fill layer")
-            elif keys & _VECTORS:
-                kind = "Vector / shape"
-                issues.append("vector masks or shapes")
             elif b"TySh" in keys:
                 kind = "Text (cached pixels)"
             elif keys & {b"SoLd", b"SoLE", b"PlLd"}:
@@ -447,7 +467,7 @@ class LayerStack:
                 issues.append(f"blend mode {blend_name}")
             if any(ranges[offset:offset + 8] != _NEUTRAL_RANGE for offset in range(0, ranges_size, 8)):
                 issues.append("custom Blend If ranges")
-            if flags & 8 and flags & 16:
+            if flags & 8 and flags & 16 and vector is None:
                 issues.append("pixels do not describe the layer appearance")
             if any(channel < -3 or channel >= self.parent.base_count for channel in channel_ids):
                 issues.append("extra or unknown layer channels")
@@ -458,12 +478,14 @@ class LayerStack:
                     issues.append("missing layer mask pixels")
                 if -3 in channel_ids:
                     issues.append("combined user and vector mask")
-            if bounds[2] > bounds[0] and bounds[3] > bounds[1] and not all(
+            if vector is None and bounds[2] > bounds[0] and bounds[3] > bounds[1] and not all(
                     channel in channel_ids for channel in range(self.parent.base_count)):
                 issues.append("missing process-channel pixels")
             layers.append(Layer(index, name or f"Layer {index + 1}", bounds, not bool(flags & 2),
                                 opacity, blend_name, kind, layer_id, tuple(channel_ids), tuple(dict.fromkeys(issues)),
-                                mask, start, cursor.absolute(), flags_offset, flags, tuple(sizes)))
+                                mask, start, cursor.absolute(), flags_offset, flags, tuple(sizes),
+                                vector=vector,
+                                _vector_bounds=(0, 0, *self.parent.samples.shape[:2]) if vector is not None else None))
         self._records_end = cursor.absolute()
         for index, layer in enumerate(layers):
             spans = []
@@ -515,13 +537,16 @@ class LayerStack:
         if (max(layer.height, layer.width) > _MAX_DIMENSION
                 or layer.height * layer.width > _MAX_PIXELS or byte_count > _DECODE_BYTES):
             raise LayerError("This layer exceeds the current 40-million-pixel / 512-MiB decoded limit.")
-        if not all(channel in layer.channel_ids for channel in range(base_count)) and layer.has_pixels:
+        if layer.vector is None and not all(channel in layer.channel_ids for channel in range(base_count)) and layer.has_pixels:
             raise UnsupportedLayerError("This layer does not contain every process-channel pixel plane.")
         maximum = (1 << bits) - 1
-        samples = np.zeros((*shape, base_count), dtype=f"uint{bits}")
-        alpha = np.full(shape, maximum, dtype=f"uint{bits}")
         mask = None
-        for channel, (start, end) in zip(layer.channel_ids, layer._channel_spans):
+        if layer.vector is not None:
+            samples, alpha = layer.vector.pixels(layer.width, layer.height, bits, base_count)
+        else:
+            samples = np.zeros((*shape, base_count), dtype=f"uint{bits}")
+            alpha = np.full(shape, maximum, dtype=f"uint{bits}")
+        for channel, (start, end) in (() if layer.vector is not None else zip(layer.channel_ids, layer._channel_spans)):
             if channel < -2 or channel >= base_count:
                 continue
             channel_shape = shape
@@ -544,7 +569,7 @@ class LayerStack:
         for array in (samples, alpha, mask):
             if array is not None:
                 array.flags.writeable = False
-        result = LayerPixels(samples, alpha, layer.bounds, mask)
+        result = LayerPixels(samples, alpha, layer.paint_bounds, mask)
         with self._lock:
             if result.nbytes <= self.cache_limit:
                 while self._cache and self._cache_size + result.nbytes > self.cache_limit:
@@ -560,7 +585,7 @@ class LayerStack:
     def _effective_alpha(self, layer: Layer, pixels: LayerPixels, y: np.ndarray, x: np.ndarray,
                          *, raw_preview: bool = False):
         maximum = (1 << self.bits) - 1
-        local_y, local_x = y - layer.bounds[0], x - layer.bounds[1]
+        local_y, local_x = y - pixels.bounds[0], x - pixels.bounds[1]
         alpha = pixels.alpha[_coordinate_slice(local_y), _coordinate_slice(local_x)].astype(np.float64) / maximum
         alpha *= layer.opacity / 255
         mask = layer.mask
@@ -602,18 +627,19 @@ class LayerStack:
             output[..., :count] = background
             if active:
                 layer = self.layers[active[0]]
-                ix = np.flatnonzero((xs >= layer.bounds[1]) & (xs < layer.bounds[3]))
-                if len(ix) and np.any((ys >= layer.bounds[0]) & (ys < layer.bounds[2])):
+                bounds = layer.paint_bounds
+                ix = np.flatnonzero((xs >= bounds[1]) & (xs < bounds[3]))
+                if len(ix) and np.any((ys >= bounds[0]) & (ys < bounds[2])):
                     pixels = self.decode_layer(active[0])
                     for y_start in range(0, len(ys), band_rows):
                         by = ys[y_start:y_start + band_rows]
-                        iy = np.flatnonzero((by >= layer.bounds[0]) & (by < layer.bounds[2]))
+                        iy = np.flatnonzero((by >= bounds[0]) & (by < bounds[2]))
                         if not len(iy):
                             continue
                         alpha = self._effective_alpha(layer, pixels, by[iy], xs[ix], raw_preview=raw_preview)
                         region = output[y_start + iy[0]:y_start + iy[-1] + 1, ix[0]:ix[-1] + 1]
-                        region[..., :count] = pixels.samples[_coordinate_slice(by[iy], layer.bounds[0]),
-                                                            _coordinate_slice(xs[ix], layer.bounds[1])]
+                        region[..., :count] = pixels.samples[_coordinate_slice(by[iy], bounds[0]),
+                                                            _coordinate_slice(xs[ix], bounds[1])]
                         np.copyto(region[..., :count], background, where=alpha[..., None] == 0)
                         region[..., count] = np.rint(alpha * maximum)
             output.flags.writeable = False
@@ -630,8 +656,9 @@ class LayerStack:
                 layer = self.layers[index]
                 if not layer.has_pixels or not layer.opacity:
                     continue
-                iy = np.flatnonzero((by >= layer.bounds[0]) & (by < layer.bounds[2]))
-                ix = np.flatnonzero((xs >= layer.bounds[1]) & (xs < layer.bounds[3]))
+                bounds = layer.paint_bounds
+                iy = np.flatnonzero((by >= bounds[0]) & (by < bounds[2]))
+                ix = np.flatnonzero((xs >= bounds[1]) & (xs < bounds[3]))
                 if not len(iy) or not len(ix):
                     continue
                 pixels = decoded_layers.get(index)
@@ -642,8 +669,8 @@ class LayerStack:
                     decoded_layers[index] = pixels
                     decoded_bytes += pixels.nbytes
                 source_alpha = self._effective_alpha(layer, pixels, by[iy], xs[ix], raw_preview=raw_preview)
-                source = pixels.samples[_coordinate_slice(by[iy], layer.bounds[0]),
-                                        _coordinate_slice(xs[ix], layer.bounds[1])].astype(np.float64)
+                source = pixels.samples[_coordinate_slice(by[iy], bounds[0]),
+                                        _coordinate_slice(xs[ix], bounds[1])].astype(np.float64)
                 source /= maximum
                 destination = premultiplied[iy[0]:iy[-1] + 1, ix[0]:ix[-1] + 1]
                 destination *= 1 - source_alpha[..., None]
@@ -684,7 +711,7 @@ class LayerStack:
         return render(doc)
 
     def render_layer(self, index: int, stride: int = 1):
-        """Show cached layer pixels at their original canvas position.
+        """Show cached layer pixels or supported solid-vector geometry.
 
         Unsupported adjustments/groups/shapes without cached process pixels
         cannot be displayed as raster artwork. Effects, clipping, vectors and

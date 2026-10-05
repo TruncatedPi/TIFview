@@ -18,6 +18,8 @@ from tifview.reader import load_image
 from tifview.render import render
 from tifview.writer import save_tiff_copy
 from tifview.layers import LayerStack
+from tifview.svg import SvgArtwork, export_svg, job_data, load_job
+from tifview.psvectors import read_shape
 
 
 def run(image_path: str, report_path: str) -> int:
@@ -224,6 +226,46 @@ def run(image_path: str, report_path: str) -> int:
             assert saved_stack.default_visible == frozenset({0})
             np.testing.assert_array_equal(saved_stack.decode_layer(0).samples,
                                           window.doc.layer_stack.decode_layer(1).samples)
+            # Exercise QtSvg from the frozen runtime, rather than assuming the
+            # desktop module and its DLL were collected by the packager.
+            artwork = SvgArtwork.from_bytes(b'<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" fill="none" stroke="red"/></svg>')
+            before_svg = window.doc.samples.copy()
+            window.install_svg(artwork)
+            window.vectors_panel.fields["x_mm"].setValue(5)
+            window.undo()
+            assert window.vectors_panel.placement.x_mm == 0
+            window.redo()
+            assert window.vectors_panel.placement.x_mm == 5
+            assert window.view.svg_item.renderer.isValid()
+            window.vectors_panel.visible.setChecked(False)
+            assert not window.view.svg_item.isVisible()
+            svg_file = report.with_name(report.stem + "-aligned.svg")
+            job_file = report.with_name(report.stem + ".tifview.json")
+            if svg_file.exists() or job_file.exists():
+                raise FileExistsError("Vector check outputs already exist")
+            svg_file.write_bytes(export_svg(window.doc, artwork, window.vectors_panel.placement))
+            job_file.write_text(json.dumps(job_data(window.doc, artwork, window.vectors_panel.placement)), encoding="utf-8")
+            loaded_svg, loaded_placement = load_job(job_file, window.doc)
+            assert loaded_svg == artwork and loaded_placement == window.vectors_panel.placement
+            np.testing.assert_array_equal(window.doc.samples, before_svg)
+            window.vectors_panel.mark_saved()
+            # Synthetic 25%-75% rectangle and solid RGB-red descriptor, with
+            # no cached raster pixels (no private/customer data in the bundle).
+            shape = read_shape({
+                b"vsms": bytes.fromhex(
+                    "03000000000000000600000000000000000000000000000000000000000000000000"
+                    "08000000000000000000000000000000000000000000000000000000040001000100"
+                    "0000000000000000000000000000000000000100000040000000400000004000000040"
+                    "0000004000000040000100000040000000c000000040000000c000000040000000c000"
+                    "01000000c0000000c0000000c0000000c0000000c0000000c00001000000c000000040"
+                    "000000c000000040000000c00000004000"),
+                b"vscg": bytes.fromhex(
+                    "6f436f531000000000000000000000006c6c756e010000000000000020726c43636a624f"
+                    "00000000000000004342475203000000000000002020645262756f640000000000e06f40"
+                    "00000000206e724762756f6400000000000000000000000020206c4262756f640000000000000000")}, "<", "RGB")
+            shape_samples, shape_alpha = shape.pixels(20, 20, 16, 3)
+            np.testing.assert_array_equal(shape_samples[10, 10], [65535, 0, 0])
+            assert shape_alpha[10, 10] == 65535 and shape_alpha[1, 1] == 0
             assert hashlib.sha256(source.read_bytes()).hexdigest() == before
             result.update(passed=True, channels=doc.report()["channels"],
                           version=__version__,
@@ -234,7 +276,8 @@ def run(image_path: str, report_path: str) -> int:
                                   "exact undo and redo", "TIFF save and reopen", "opaque RLE layers and ICC",
                                   "rebuilt image pyramid", "lazy Qt layer pixels", "layer visibility and order",
                                   "synchronized native layer composite and transparency", "saved compressed layer pixels",
-                                  "mixed layer undo and redo", "untouched source"])
+                                  "mixed layer undo and redo", "frozen Qt SVG renderer and alignment undo/redo",
+                                  "physical SVG export and alignment job round trip", "native solid vector shape without cached pixels", "untouched source"])
         except Exception as exc:
             result.update(passed=False, error=traceback.format_exc())
         if window.previewer is not None:
@@ -248,6 +291,7 @@ def run(image_path: str, report_path: str) -> int:
         report.write_text(json.dumps(result, indent=2), encoding="utf-8")
         if window.edits:
             window.edits.mark_saved()  # An unattended check must not ask to discard.
+        window.vectors_panel.mark_saved()
         window.close()
         app.exit(0 if result["passed"] else 1)
 

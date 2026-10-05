@@ -1,24 +1,35 @@
-Fix large layer visibility changes failing with "Layer change exceeds the 128 MiB
-undo limit" after a long wait. Layer undo now stores lossless compressed native
-pixel differences in bounded row bands, rather than two full pixel rectangles.
-The 128 MiB history budget stays in place, and undo/redo remains exact.
+Add basic vector support and TIFF/SVG alignment.
 
-Download the [**TIFview 0.4.3 Windows x64 ZIP**](https://github.com/TruncatedPi/TIFview/releases/download/v0.4.3/TIFview-0.4.3-windows-x64.zip),
-extract the entire archive, and run **TIFview/TIFview.exe**. Python is included.
-Rerun `setup.cmd` from the source ZIP for automatic updating.
+Download the [**TIFview 0.5.0 Windows x64 ZIP**](https://github.com/TruncatedPi/TIFview/releases/download/v0.5.0/TIFview-0.5.0-windows-x64.zip),
+extract the entire archive, and run **TIFview/TIFview.exe**. Rerun `setup.cmd`
+from the source ZIP for automatic updating. Python and Qt SVG are included.
 
-Compositing avoids repeated array-index copies, associates transparency using
-bounded integer bands, and copies native colours directly for a single visible
-layer. The initial exact baseline check is retained; later edits reuse it.
+Supported Photoshop solid shapes render from their closed additive paths even
+when the layer has no cached raster pixels. Solid fill/stroke colours, enable
+flags, physical widths, opacity, caps/joins and inside/outside alignment are
+interpreted. Layer visibility/order copies retain the original editable vector
+records and compressed layer pixels, and leave spot masks unchanged. Colour
+spaces must match the TIFF process mode. Complex fills, vector masks on raster
+layers, dashed strokes and other unsupported styles still report a reason.
+The exact original-composite check remains in place for visible layer baselines.
 
-On the supplied 7200 x 2160, 8-bit CMYK sample, the formerly failing toggle took
-about 24 seconds before this fix. It now succeeds in about 10.5 seconds here;
-a later toggle takes about 4.1 seconds. Undo/redo takes 0.2-0.4 seconds, with
-roughly 0.7-0.9 MiB per undo record. Timing depends on the computer and file.
+Use **Vectors > Import SVG** for one static path/shape overlay. Position and size
+use millimetres calibrated by image DPI, with rotation, visibility and alignment
+undo/redo. A separate `.tifview.json` saves the SVG and alignment; **Export aligned
+SVG** preserves vectors on a page matching the TIFF physical size. Save image
+edits with **Save TIFF copy** separately, then save the job for that saved copy.
+The SVG overlay is not burned into the TIFF or converted to a Photoshop layer.
 
-Both visibility test copies retain the original compressed Photoshop layer
-pixels and white spot samples. Native saved pixels and exact undo/redo are
-verified, and the source file stays unchanged. Private copies and reports stay
-in ignored validation/local; Photoshop/PrintExp checks of these new copies
-remain for the user. Synthetic regressions cover compressed history, mixed
-pixel edits, 8/16-bit values, orientation, masks, opacity and sampled previews.
+SVG text needs outlines. Unsupported images/effects, clipping, gradients,
+stylesheets, clones and geometry outside the SVG page are rejected explicitly.
+Physical size, SVG viewport mapping, rotated/non-square DPI, displayed/exported
+alignment, native 8/16-bit shape samples, original vector records, undo/redo and
+source protection have automated checks. The portable build also checks its
+actual Qt SVG renderer, job/export and native shape rendering.
+
+The supplied rectangle now displays and can be shown/reordered in test copies.
+Their native merged samples, unchanged spots, original layer records and source
+checksum are verified. **Photoshop/PrintExp validation of these new vector copies
+is pending**, as is a representative real TIFF/SVG print-and-cut workflow.
+Antialiased vector edges may differ from Photoshop; some already-visible vector
+stacks can fail the exact baseline check and remain unavailable for layer edits.

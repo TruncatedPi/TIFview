@@ -25,6 +25,8 @@ from .preview import PreviewCache, preview_key
 from .editing import EditSession, raster_shape
 from .layerpanel import LayersPanel
 from .layers import LayerStack
+from .svg import Placement, SvgArtwork, SvgItem, export_svg, job_data, load_job
+from .vectorpanel import VectorsPanel
 from .writer import SaveOptions, layer_preservation_reason, save_tiff_copy
 
 
@@ -59,6 +61,16 @@ class ImageView(QGraphicsView):
         self.preview_item = QGraphicsPathItem()
         self.preview_item.setZValue(1)
         self.scene().addItem(self.preview_item)
+        self.svg_item = None
+
+    def set_svg(self, artwork=None, placement=None, dpi=None):
+        if self.svg_item is not None:
+            self.scene().removeItem(self.svg_item)
+            self.svg_item = None
+        if artwork is not None:
+            self.svg_item = SvgItem(artwork)
+            self.scene().addItem(self.svg_item)
+            self.svg_item.place(placement, dpi)
 
     def set_tool(self, tool):
         self.tool = tool
@@ -446,6 +458,11 @@ class ViewerWindow(QMainWindow):
         self.move_spot_down_action = self.spot_menu.addAction("Move spot down", lambda: self.move_spot(1))
         self.spot_menu.addSeparator()
         self.delete_spot_action = self.spot_menu.addAction("Delete spot…", self.delete_spot)
+        vector_menu = self.menuBar().addMenu("Vectors")
+        self.import_svg_action = vector_menu.addAction("Import SVG…", self.choose_svg)
+        self.load_job_action = vector_menu.addAction("Open alignment job…", self.choose_alignment_job)
+        self.save_job_action = vector_menu.addAction("Save alignment job…", self.choose_save_job)
+        self.export_svg_action = vector_menu.addAction("Export aligned SVG…", self.choose_export_svg)
         self.menuBar().addMenu("Help").addAction("About TIFview…", self.show_about)
 
         self.edit_toolbar = QToolBar("Pixel edits")
@@ -544,6 +561,14 @@ class ViewerWindow(QMainWindow):
         self.layers_panel.selection_changed.connect(self.layer_selection_changed)
         self.layers_panel.visibility_requested.connect(self.layer_visibility_changed)
         self.layers_panel.move_requested.connect(self.move_layer)
+        self.vectors_panel = VectorsPanel()
+        self.tabs.addTab(self.vectors_panel, "Vectors")
+        self.vectors_panel.import_requested.connect(self.choose_svg)
+        self.vectors_panel.load_requested.connect(self.choose_alignment_job)
+        self.vectors_panel.save_requested.connect(self.choose_save_job)
+        self.vectors_panel.export_requested.connect(self.choose_export_svg)
+        self.vectors_panel.placement_changed.connect(self.svg_placement_changed)
+        self.vectors_panel.remove_requested.connect(self.remove_svg)
         self.notice = QLabel()
         self.notice.setWordWrap(True)
         self.notice.setStyleSheet("background: #fff0cb; color: #563a00; padding: 8px;")
@@ -614,6 +639,9 @@ class ViewerWindow(QMainWindow):
         self.statusBar().showMessage("Image could not be opened")
 
     def accept_document(self, doc: ImageDocument, preview: np.ndarray):
+        self._last_tiff_copy = None
+        self.view.set_svg()
+        self.vectors_panel.set_artwork()
         self.doc = doc
         self.edits = EditSession(doc)
         self.tabs.blockSignals(True)
@@ -681,6 +709,101 @@ class ViewerWindow(QMainWindow):
 
     def layer_mode(self):
         return self.tabs.currentIndex() == 1
+
+    def install_svg(self, artwork, placement=None, dirty=True):
+        if self.doc is None or not self.doc.metadata.get("dpi"):
+            raise ValueError("The image needs a calibrated print resolution before SVG alignment. Set its DPI in Photoshop and reopen it.")
+        placement = placement or Placement(width_mm=artwork.width_mm, height_mm=artwork.height_mm)
+        self.view.set_svg(artwork, placement, self.doc.metadata["dpi"])
+        self.vectors_panel.set_artwork(artwork, placement, dirty)
+        self.tabs.setCurrentWidget(self.vectors_panel)
+        self.setWindowModified(bool(self.edits and self.edits.dirty) or dirty)
+        self.set_controls()
+
+    def choose_svg(self):
+        if self.doc is None:
+            return
+        filename, _ = QFileDialog.getOpenFileName(self, "Import SVG overlay", str(self.doc.path.parent), "SVG (*.svg)")
+        if filename:
+            try:
+                self.install_svg(SvgArtwork.read(filename))
+            except Exception as exc:
+                QMessageBox.warning(self, "Could not import SVG", str(exc))
+
+    def svg_placement_changed(self, placement):
+        if self.view.svg_item is not None:
+            self.view.svg_item.place(placement, self.doc.metadata["dpi"])
+            self.setWindowModified(bool(self.edits and self.edits.dirty) or self.vectors_panel.dirty)
+            self.set_controls()
+
+    def remove_svg(self):
+        self.view.set_svg()
+        self.vectors_panel.set_artwork()
+        self.setWindowModified(bool(self.edits and self.edits.dirty))
+        self.set_controls()
+
+    def choose_alignment_job(self):
+        if self.doc is None:
+            return
+        filename, _ = QFileDialog.getOpenFileName(self, "Open SVG alignment job", str(self.doc.path.parent), "TIFview job (*.tifview.json)")
+        if filename:
+            try:
+                self.install_svg(*load_job(filename, self.doc), dirty=False)
+            except Exception as exc:
+                QMessageBox.warning(self, "Could not open alignment job", str(exc))
+
+    def save_vector_file(self, filename, data):
+        # Never let a sidecar/export replace the source image.
+        import tempfile
+        path = Path(filename)
+        protected = {self.doc.path.resolve()}
+        if self.vectors_panel.artwork and self.vectors_panel.artwork.source_path:
+            protected.add(self.vectors_panel.artwork.source_path)
+        if path.resolve() in protected:
+            raise ValueError("Choose a separate output file; the source image must stay untouched.")
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".tifview-", delete=False) as output:
+                temporary = Path(output.name)
+                output.write(data)
+            os.replace(temporary, path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def choose_save_job(self):
+        panel = self.vectors_panel
+        if self.doc is None or panel.artwork is None:
+            return
+        image_path = self._last_tiff_copy or self.doc.path
+        initial = image_path.with_name(image_path.name + ".tifview.json")
+        filename, _ = QFileDialog.getSaveFileName(self, "Save SVG alignment job", str(initial), "TIFview job (*.tifview.json)")
+        if filename:
+            try:
+                if not filename.lower().endswith(".tifview.json"):
+                    filename += ".tifview.json"
+                data = job_data(self.doc, panel.artwork, panel.placement, image_path=image_path)
+                self.save_vector_file(filename, json.dumps(data, indent=2).encode("utf-8"))
+                panel.mark_saved()
+                self.setWindowModified(bool(self.edits and self.edits.dirty))
+                self.statusBar().showMessage("Saved SVG alignment job · TIFF pixel/layer edits are saved separately using Save TIFF copy")
+            except Exception as exc:
+                QMessageBox.warning(self, "Could not save alignment job", str(exc))
+
+    def choose_export_svg(self):
+        panel = self.vectors_panel
+        if self.doc is None or panel.artwork is None:
+            return
+        initial = self.doc.path.with_name(self.doc.path.stem + ".aligned.svg")
+        filename, _ = QFileDialog.getSaveFileName(self, "Export aligned SVG (includes hidden overlay)", str(initial), "SVG (*.svg)")
+        if filename:
+            try:
+                if not Path(filename).suffix:
+                    filename += ".svg"
+                self.save_vector_file(filename, export_svg(self.doc, panel.artwork, panel.placement))
+                self.statusBar().showMessage("Exported SVG at the image's physical page size · Cut paths remain vectors")
+            except Exception as exc:
+                QMessageBox.warning(self, "Could not export SVG", str(exc))
 
     def layer_busy(self):
         return (self.layer_loader is not None or self.layer_editor is not None or
@@ -921,13 +1044,14 @@ class ViewerWindow(QMainWindow):
             QMessageBox.warning(self, "Could not paint channel", str(exc))
 
     def edits_changed(self, selected_id=None):
+        self._last_tiff_copy = None
         selected_id = self.selected_channel_id() if selected_id is None else selected_id
         self.remember_channel_preferences()
         self.doc = self.edits.document
         self._preview_version += 1
         self.preview_cache.clear()
         self._displayed_preview = None
-        self.setWindowModified(self.edits.dirty)
+        self.setWindowModified(self.edits.dirty or self.vectors_panel.dirty)
         self.rebuild_channels(selected_id)
         self.update_layers_panel()
         self.update_dimensions()
@@ -953,19 +1077,27 @@ class ViewerWindow(QMainWindow):
                 40, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)))
 
     def undo(self):
+        if self.tabs.currentWidget() is self.vectors_panel:
+            if self.saver is None and self.loader is None and not self.layer_busy():
+                self.vectors_panel.undo()
+            return
         if self.edits and self.saver is None and self.loader is None and self.previewer is None and not self.layer_busy():
             self.edits.undo()
             self.edits_changed()
 
     def redo(self):
+        if self.tabs.currentWidget() is self.vectors_panel:
+            if self.saver is None and self.loader is None and not self.layer_busy():
+                self.vectors_panel.redo()
+            return
         if self.edits and self.saver is None and self.loader is None and self.previewer is None and not self.layer_busy():
             self.edits.redo()
             self.edits_changed()
 
     def confirm_discard(self):
-        if not self.edits or not self.edits.dirty:
+        if not (self.edits and self.edits.dirty) and not self.vectors_panel.dirty:
             return True
-        answer = QMessageBox.question(self, "Unsaved edits", "Discard unsaved channel, layer and pixel edits? The original source file is unchanged.",
+        answer = QMessageBox.question(self, "Unsaved edits", "Discard unsaved channel, layer, pixel or SVG alignment edits? The original source file is unchanged.",
                                       QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
                                       QMessageBox.StandardButton.Cancel)
         return answer == QMessageBox.StandardButton.Discard
@@ -996,8 +1128,9 @@ class ViewerWindow(QMainWindow):
         self.saver.start()
 
     def copy_saved(self, filename):
+        self._last_tiff_copy = Path(filename)
         self.edits.mark_saved()
-        self.setWindowModified(False)
+        self.setWindowModified(self.vectors_panel.dirty)
         self.statusBar().showMessage(f"Saved and verified: {filename} · Original source unchanged")
 
     def save_failed(self, message):
@@ -1019,6 +1152,18 @@ class ViewerWindow(QMainWindow):
         selected = self.selected_index() if self.doc else None
         busy = self.loader is not None or self.saver is not None or self.layer_busy()
         rendering = self.previewer is not None
+        vector_enabled = self.doc is not None and bool(self.doc.metadata.get("dpi")) and not busy
+        self.vectors_panel.update_controls(vector_enabled)
+        if self.doc and self.doc.metadata.get("dpi"):
+            dx, dy = self.doc.metadata["dpi"]
+            self.vectors_panel.calibration.setText(f"Image: {self.doc.width * 25.4 / dx:.3f} × {self.doc.height * 25.4 / dy:.3f} mm\nResolution: {dx:g} × {dy:g} dpi")
+        else:
+            self.vectors_panel.calibration.setText("SVG alignment needs an image with calibrated print resolution (DPI).")
+        self.import_svg_action.setEnabled(vector_enabled)
+        self.load_job_action.setEnabled(vector_enabled)
+        vector_present = vector_enabled and self.vectors_panel.artwork is not None
+        self.save_job_action.setEnabled(vector_present)
+        self.export_svg_action.setEnabled(vector_present)
         editable = self.doc is not None and self.doc.bits in (8, 16) and self.doc.color_mode != "Palette"
         spot_editable = editable and not busy and not rendering and not self.layer_mode()
         spot = self.selected_spot()
@@ -1032,11 +1177,13 @@ class ViewerWindow(QMainWindow):
         self.move_spot_down_action.setEnabled(spot_editable and spot is not None and sequence < spot_count)
         self.open_action.setEnabled(not busy and not rendering)
         self.save_action.setEnabled(editable and not busy and not rendering)
-        self.undo_action.setEnabled(bool(self.edits and self.edits.can_undo and not busy and not rendering))
-        self.redo_action.setEnabled(bool(self.edits and self.edits.can_redo and not busy and not rendering))
-        self.edit_toolbar.setEnabled(editable and selected is not None and not busy and not rendering and not self.layer_mode())
+        history = self.vectors_panel if self.tabs.currentWidget() is self.vectors_panel else self.edits
+        history_enabled = not busy and (not rendering or history is self.vectors_panel)
+        self.undo_action.setEnabled(bool(history and history.can_undo and history_enabled))
+        self.redo_action.setEnabled(bool(history and history.can_redo and history_enabled))
+        self.edit_toolbar.setEnabled(editable and selected is not None and not busy and not rendering and self.tabs.currentIndex() == 0)
         self.channels.setEnabled(self.loader is None)
-        self.view.drawing_enabled = editable and selected is not None and not busy and not rendering and not self.layer_mode()
+        self.view.drawing_enabled = editable and selected is not None and not busy and not rendering and self.tabs.currentIndex() == 0
         self.layers_panel.set_busy(busy)
         if self.doc and self.doc.layer_stack:
             stack, state = self.doc.layer_stack, self.doc.layer_state
@@ -1047,6 +1194,8 @@ class ViewerWindow(QMainWindow):
             index = self.layers_panel.selected_index()
             if not reason and index is not None and stack.layers[index].preview_note:
                 self.layers_panel.notice.setText(stack.layers[index].preview_note)
+            elif not reason and index is not None and stack.layers[index].vector is not None:
+                self.layers_panel.notice.setText("Rendered from solid vector geometry. Saving visibility/order retains the editable Photoshop paths. Edge rasterization may differ from Photoshop; validate a copy before production.")
             elif not reason and index is None:
                 note = stack.composite_reason(state.order, state.visible)
                 if note:

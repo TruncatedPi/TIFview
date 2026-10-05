@@ -325,3 +325,34 @@ history budget, exact 8/16-bit restoration, rotated TIFF orientation, mixed spot
 painting and compressed layer undo, and independent single-layer mask/opacity
 oracles across band boundaries and odd preview strides. Existing atomic limit
 rejection, history eviction, source protection and TIFF-save checks remain.
+
+
+## Basic vectors and SVG alignment (v0.5.0)
+
+The supplied RGB 600-DPI TIFF contains a hidden solid rectangle with zero cached
+raster bounds. Its path and stroke descriptors specify a red, 1 mm outside stroke
+with fill disabled. The new bounded interpreter identifies this subset and
+renders it from geometry. Private visible/reordered copies are saved under
+ignored validation/local/vectors/. Native saved pixels, every unchanged spot/
+alpha plane, original layer records (except hidden flags), original compressed
+channel bytes, and unchanged source SHA-256 are checked. The private preview,
+copies and report are not tracked. Photoshop/PrintExp checks of these **new**
+vector copies are pending; earlier raster-layer validation does not cover them.
+
+Synthetic coverage checks exercise RGB/CMYK 8/16-bit shapes without cached
+pixels, both Photoshop byte orders, physical stroke widths and outside/inside/
+centre alignment, malformed descriptor limits, native mismatch rejection,
+vector preservation, spots and exact undo/redo. SVG tests compare the displayed
+and exported pixels for rotation, non-square DPI, viewport offsets, differing
+aspect ratios and stretching. Absolute units, rotated TIFF DPI, self-contained
+job round trips, checksum mismatch rejection, UI alignment undo/redo and source
+protection are verified. Unsupported clipping/cropped geometry and malformed
+paths/transforms are rejected before Qt silently renders a partial document.
+The frozen executable check exercises actual Qt SVG import/alignment, job and
+vector export, and a native 16-bit solid shape without raster pixels.
+
+No real TIFF/SVG pair, cutter, or imported-SVG TIFF rasterization has been
+validated. The imported SVG remains a separate vector overlay/export. Some
+already-visible Photoshop vector stacks will fail the exact native baseline
+check because of antialiasing or other unmodelled settings; they remain blocked
+from layer edits rather than receiving an approximate replacement silently.
