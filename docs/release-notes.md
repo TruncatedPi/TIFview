@@ -39,6 +39,7 @@ interleaved samples, IBM-PC byte order, DPI, transparency and a rebuilt pyramid.
 Supported layer records and their original compressed pixel data are retained.
 
 Automated fixtures cover layer pixels, visibility/order, synchronized native
-samples, undo/redo and layer-data retention. This new workflow needs a Photoshop
-and PrintExp round trip before production use. The earlier tested channel-editing
-workflow does not independently validate this layer compositor.
+samples, undo/redo and layer-data retention. The user visually validated both
+layer test copies in Photoshop. PrintExp validation for these new layer changes
+remains pending; the earlier tested channel-editing workflow does not establish
+RIP compatibility for this layer compositor.

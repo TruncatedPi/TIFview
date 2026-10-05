@@ -287,6 +287,8 @@ The common-format fixes made during integration are retained: PNG/JPEG DPI,
 EXIF-rotated resolution, PNG colour-key transparency, and unified image-size
 limits. Their import/export regressions run alongside the layer tests.
 
-This new layer workflow still needs independent comparison in Photoshop and
-PrintExp. Earlier successful channel-editing tests do not establish full
-Photoshop compositing or RIP compatibility for new layer changes.
+On 2026-10-04, the user confirmed that both the visibility and reordered layer
+test copies look correct in **Photoshop**. This is visual validation of these
+two sample copies; no independent per-pixel Photoshop measurements were recorded.
+**PrintExp validation remains pending** and will be performed on the shop PC.
+Earlier successful channel-editing RIP tests do not cover these new layer changes.

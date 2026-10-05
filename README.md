@@ -142,8 +142,9 @@ appearance features can still proceed when the remaining stack is supported.
 Layer records load lazily when the tab is opened. Compressed pixels decode on
 demand, with a bounded cache and background preview work for large files.
 Pixel drawing remains in the **Channels** tab; painting underlying layer pixels
-is not implemented. This new layer visibility/order workflow needs an independent
-**Photoshop and PrintExp round trip** before relying on it for production.
+is not implemented. The user visually validated both layer visibility/order
+test copies in **Photoshop**. **PrintExp testing is still pending** for this new
+workflow; the earlier channel-editing RIP validation does not cover these changes.
 
 ## Manage spot channels
 
