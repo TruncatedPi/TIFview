@@ -290,5 +290,8 @@ limits. Their import/export regressions run alongside the layer tests.
 On 2026-10-04, the user confirmed that both the visibility and reordered layer
 test copies look correct in **Photoshop**. This is visual validation of these
 two sample copies; no independent per-pixel Photoshop measurements were recorded.
-**PrintExp validation remains pending** and will be performed on the shop PC.
-Earlier successful channel-editing RIP tests do not cover these new layer changes.
+The user subsequently validated both copies in **PrintExp on the shop PC** and
+reported that everything looks good. The new layer visibility/order sample
+workflow therefore has user validation in both Photoshop and PrintExp for the
+Refinecolor 6090. The installed application versions were not recorded; this
+result covers these test copies rather than every Photoshop TIFF variant.

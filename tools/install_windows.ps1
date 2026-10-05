@@ -44,7 +44,7 @@ if (!$NoShortcut) {
     $shortcut = $shell.CreateShortcut((Join-Path $desktop 'TIFview.lnk'))
     $shortcut.TargetPath = $executable
     $shortcut.WorkingDirectory = Split-Path -Parent $executable
-    $shortcut.Description = 'Printing image and channel viewer with pixel editing'
+    $shortcut.Description = "TIFview $($release.tag_name.Substring(1)) - printing image, channel and layer viewer"
     $shortcut.Save()
 }
 Write-Host "TIFview is ready: $executable"

@@ -56,12 +56,21 @@ and `build/package-check.json`. All generated output is ignored by Git.
 
 ## Publish a version
 
-Update `tifview/__init__.py` with the next version and commit the change.
+Update `tifview/__init__.py`, README line 1 and the download links with the next
+version and commit the change.
 Push a matching `v<version>` tag; for example, the initial prototype is `v0.1.0`.
 The build checks that the tag matches the application version. Tests and the
 executable check must pass before the workflow creates the release and uploads
 the download. If a job fails, its logs and saved reports show why; no release
 is created by that failed run.
+
+The build also requires README line 1 to match `tifview.__version__`. It generates
+the Windows version resource from that value using PyInstaller's
+[`--version-file`](https://www.pyinstaller.org/en/stable/usage.html#cmdoption-version-file).
+It reads the finished EXE's File/Product version through Windows and checks both
+the string fields and the four numeric components. This is the
+[version metadata Windows exposes](https://learn.microsoft.com/en-us/windows/win32/menurc/about-version-information).
+`build/executable-version.json` records the result alongside the portable UI check.
 
 For a pre-release build without publishing, use **Run workflow** on the Actions
 page and download its `windows-portable` artifact. Public release assets are

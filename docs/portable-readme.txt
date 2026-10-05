@@ -1,4 +1,4 @@
-TIFview - printing image/channel viewer and pixel editor
+TIFview 0.4.1 - printing image/channel/layer viewer and pixel editor
 
 Windows 10/11, 64-bit (x64).
 
@@ -16,6 +16,10 @@ edited channel pixels into a separate file.
 Mouse wheel: zoom. Pan tool: drag image. Middle button: pan while drawing.
 F: fit. 1: actual pixels. Ctrl+Z: undo. Ctrl+Y: redo. Ctrl+Shift+S: Save TIFF copy.
 
+The running version stays visible in the title and at the bottom right.
+Help > About TIFview shows the version and this copy's location.
+In Explorer, TIFview.exe > Properties > Details shows File/Product version.
+
 Select one channel, choose Ellipse/Box/Line and drag, or choose Text and click.
 Shade 0 paints black (normally ink on spots), 255 paints white for 8-bit images;
 16-bit white is 65535. Width/text size are in original image pixels.
@@ -28,7 +32,7 @@ pixels and updating the native merged image. These changes support undo/redo.
 Ordinary Normal raster layers and simple bitmap masks are supported; unsupported
 adjustments, effects, groups, blend modes or feathered/vector masks show a reason
 and block changes that cannot be saved faithfully. Inspect cached pixels where
-available. Layer changes need a new Photoshop/PrintExp check before production.
+available. The user validated the layer test copies in Photoshop and PrintExp.
 Content Credentials metadata does not block TIFF saving. Credentials are omitted
 from saved copies because this app cannot update their signature after editing.
 

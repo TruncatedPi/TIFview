@@ -9,9 +9,10 @@ import numpy as np
 import tifffile
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLineEdit, QLabel
 
 import tifview.app as gui
+from tifview import __version__
 from tifview.app import ViewerWindow, configure_application
 from tifview.reader import load_image
 from tifview.render import render
@@ -40,6 +41,13 @@ def run(image_path: str, report_path: str) -> int:
 
     window = CheckWindow()
     window.show()
+    assert app.applicationVersion() == __version__
+    assert __version__ in window.windowTitle()
+    assert window.version_label.text() == f"TIFview {__version__}"
+    about = window.about_dialog()
+    assert any(label.text() == f"TIFview {__version__}" for label in about.findChildren(QLabel))
+    assert about.findChild(QLineEdit).text() == str(window.application_location())
+    about.deleteLater()
     window.open_path(str(source))
     deadline = time.monotonic() + 30
     result = {}
@@ -57,6 +65,7 @@ def run(image_path: str, report_path: str) -> int:
             doc = window.doc
             if doc is None:
                 raise AssertionError("No document loaded")
+            assert __version__ in window.windowTitle() and window.version_label.isVisible()
             # The build script supplies a known synthetic RGB + two spots + alpha TIFF.
             assert [c.name for c in doc.channels] == [
                 "Red", "Green", "Blue", "White Ink", "Varnish", "Saved selection"]
@@ -217,7 +226,8 @@ def run(image_path: str, report_path: str) -> int:
                                           window.doc.layer_stack.decode_layer(1).samples)
             assert hashlib.sha256(source.read_bytes()).hexdigest() == before
             result.update(passed=True, channels=doc.report()["channels"],
-                          checks=["LZW decoding", "Photoshop names and types", "Qt channel pixels",
+                          version=__version__,
+                          checks=["visible application version and About location", "LZW decoding", "Photoshop names and types", "Qt channel pixels",
                                   "spot sequence labels", "background previews and stale-result cancellation",
                                   "actual pixels, zoom and fit", "ellipse, box, line and text pixels",
                                   "create, duplicate, reorder, properties and delete spots", "exact structural undo and redo",

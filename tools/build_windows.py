@@ -16,12 +16,62 @@ from tools.make_demo import make_demo
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def write_version_resource(path: Path):
+    """Generate the Explorer resource from the application's release version."""
+    from PyInstaller.utils.win32.versioninfo import (
+        FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+        VarFileInfo, VarStruct, VSVersionInfo,
+    )
+    parts = tuple(int(part) for part in __version__.split("."))
+    if len(parts) != 3 or any(not 0 <= part <= 65535 for part in parts):
+        raise ValueError("Windows release versions must have three 16-bit numeric components")
+    numeric = (*parts, 0)
+    fields = {
+        "FileDescription": "TIFview printing image, channel and layer viewer",
+        "FileVersion": __version__, "InternalName": "TIFview",
+        "OriginalFilename": "TIFview.exe", "ProductName": "TIFview", "ProductVersion": __version__,
+    }
+    info = VSVersionInfo(
+        ffi=FixedFileInfo(filevers=numeric, prodvers=numeric, mask=0x3f, flags=0,
+                         OS=0x40004, fileType=1, subtype=0, date=(0, 0)),
+        kids=[StringFileInfo([StringTable("040904B0", [StringStruct(key, value) for key, value in fields.items()])]),
+              VarFileInfo([VarStruct("Translation", [1033, 1200])])],
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(info), encoding="utf-8")
+    return fields, numeric
+
+
+def verify_version_resource(executable: Path, fields, numeric):
+    """Read actual Explorer/.NET metadata from the finished PE executable."""
+    command = (
+        "$ErrorActionPreference='Stop'; "
+        "$info=(Get-Item -LiteralPath $env:TIFVIEW_VERSION_EXE).VersionInfo; "
+        "[pscustomobject]@{FileVersion=$info.FileVersion; ProductVersion=$info.ProductVersion; "
+        "ProductName=$info.ProductName; FileDescription=$info.FileDescription; "
+        "InternalName=$info.InternalName; OriginalFilename=$info.OriginalFilename; "
+        "NumericVersion=@($info.FileMajorPart,$info.FileMinorPart,$info.FileBuildPart,$info.FilePrivatePart)} "
+        "| ConvertTo-Json -Compress"
+    )
+    result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+                            check=True, capture_output=True, text=True,
+                            env=dict(os.environ, TIFVIEW_VERSION_EXE=str(executable)))
+    actual = json.loads(result.stdout)
+    if any(actual.get(key) != value for key, value in fields.items()) or tuple(actual["NumericVersion"]) != numeric:
+        raise SystemExit(f"Executable version metadata did not match the release: {actual}")
+    return actual
+
+
 def main():
     if sys.platform != "win32" or sys.maxsize <= 2**32:
         raise SystemExit("Build with 64-bit Python on Windows.")
     tag = os.environ.get("GITHUB_REF", "")
     if tag.startswith("refs/tags/") and tag != f"refs/tags/v{__version__}":
         raise SystemExit("Release tag must match tifview.__version__.")
+    if (ROOT / "README.md").read_text(encoding="utf-8").splitlines()[0] != f"# TIFview {__version__}":
+        raise SystemExit("README line 1 must match the application version.")
+    version_path = ROOT / "build/windows-version.txt"
+    version_fields, numeric_version = write_version_resource(version_path)
     windows = Path(os.environ.get("WINDIR", "C:/Windows"))
     build_env = dict(os.environ, PYINSTALLER_CONFIG_DIR=str(ROOT / "build/pyinstaller-cache"))
     # Other tools (e.g. Poppler) can supply incompatible DLLs with the same name
@@ -35,6 +85,7 @@ def main():
         "--onedir", "--name", "TIFview", "--paths", str(ROOT),
         "--distpath", str(ROOT / "dist"), "--workpath", str(ROOT / "build/pyinstaller"),
         "--specpath", str(ROOT / "build"),
+        "--version-file", str(version_path),
         # TIFF codecs load their compiled modules dynamically.
         "--collect-all", "imagecodecs", "--copy-metadata", "imagecodecs",
         "--exclude-module", "PySide6.QtTest", "--exclude-module", "pytest",
@@ -42,6 +93,8 @@ def main():
         str(ROOT / "tools/windows_entry.py"),
     ], cwd=ROOT, check=True, env=build_env)
     bundle = ROOT / "dist/TIFview"
+    executable_version = verify_version_resource(bundle / "TIFview.exe", version_fields, numeric_version)
+    (ROOT / "build/executable-version.json").write_text(json.dumps(executable_version, indent=2), encoding="utf-8")
     shutil.copyfile(ROOT / "docs/portable-readme.txt", bundle / "START-HERE.txt")
     shutil.copyfile(ROOT / "README.md", bundle / "README.md")
     shutil.copytree(ROOT / "docs", bundle / "docs", dirs_exist_ok=True)

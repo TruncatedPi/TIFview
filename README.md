@@ -1,4 +1,4 @@
-# TIFview
+# TIFview 0.4.1
 
 [![Windows checks](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml/badge.svg)](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml)
 
@@ -36,7 +36,7 @@ the other spots; click **Composite** to return to the colour image.
 **Windows 10/11, 64-bit (x64). Python is included in the portable download.**
 
 1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
-2. Download [**TIFview-0.4.0-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.4.0/TIFview-0.4.0-windows-x64.zip) and extract the entire ZIP.
+2. Download [**TIFview-0.4.1-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.4.1/TIFview-0.4.1-windows-x64.zip) and extract the entire ZIP.
 3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
 
 Keep the `_internal` folder with the executable. No Python installation, Git,
@@ -51,6 +51,19 @@ release, verifies its SHA-256 checksum, extracts it to
 `%LOCALAPPDATA%\TIFview\<version>`, creates a TIFview desktop shortcut, and
 launches the app. Run it again to install a newer release. It does not install
 Python or change your system-wide PowerShell execution policy.
+
+### Find the running or installed version
+
+The version stays visible in the window title and at the bottom right of the
+running app, including while files load or save. **Help → About TIFview** shows
+the version and the executable's location so you can identify the installed copy.
+The version label's tooltip also shows that location.
+
+In Explorer, right-click **TIFview.exe → Properties → Details** to see its
+**File version** and **Product version**. These identify that particular EXE;
+older downloaded copies keep their original versions. Versions before 0.4.1
+did not include this Explorer metadata. The first line of each packaged README
+also identifies its release.
 
 ### Python version and source setup
 
@@ -142,9 +155,9 @@ appearance features can still proceed when the remaining stack is supported.
 Layer records load lazily when the tab is opened. Compressed pixels decode on
 demand, with a bounded cache and background preview work for large files.
 Pixel drawing remains in the **Channels** tab; painting underlying layer pixels
-is not implemented. The user visually validated both layer visibility/order
-test copies in **Photoshop**. **PrintExp testing is still pending** for this new
-workflow; the earlier channel-editing RIP validation does not cover these changes.
+is not implemented. The user validated both layer visibility/order test copies
+in **Photoshop and PrintExp** on the shop PC. This confirms the tested sample
+workflow; unsupported layer features remain subject to the restrictions above.
 
 ## Manage spot channels
 

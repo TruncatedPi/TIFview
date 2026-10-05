@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import math
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QTabWidget, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from . import __version__
 from .model import ImageDocument
 from .reader import load_image
 from .render import RenderCancelled, grayscale, render
@@ -394,7 +396,7 @@ class ViewerWindow(QMainWindow):
         self.edits: EditSession | None = None
         self.colors: dict[int, tuple[int, int, int]] = {}
         self._channel_preferences = {}
-        self.setWindowTitle("TIFview — channel viewer and pixel editor")
+        self.setWindowTitle(f"TIFview {__version__} — channel and layer viewer")
         self.resize(1200, 800)
         self.setMinimumSize(820, 540)
         self.setAcceptDrops(True)
@@ -444,6 +446,7 @@ class ViewerWindow(QMainWindow):
         self.move_spot_down_action = self.spot_menu.addAction("Move spot down", lambda: self.move_spot(1))
         self.spot_menu.addSeparator()
         self.delete_spot_action = self.spot_menu.addAction("Delete spot…", self.delete_spot)
+        self.menuBar().addMenu("Help").addAction("About TIFview…", self.show_about)
 
         self.edit_toolbar = QToolBar("Pixel edits")
         self.edit_toolbar.setMovable(False)
@@ -554,6 +557,9 @@ class ViewerWindow(QMainWindow):
         self.splitter.addWidget(self.view)
         self.splitter.setSizes([330, 870])
         self.setCentralWidget(self.splitter)
+        self.version_label = QLabel(f"TIFview {__version__}")
+        self.version_label.setToolTip(f"Running from: {self.application_location()}")
+        self.statusBar().addPermanentWidget(self.version_label)
         self.statusBar().showMessage("Open or drop an image. Wheel: zoom · Drag: pan · F: fit · 1: actual pixels")
         self.set_controls()
         if initial_path:
@@ -625,7 +631,7 @@ class ViewerWindow(QMainWindow):
         self.file_label.setText(doc.path.name)
         self.file_label.setToolTip(str(doc.path))
         self.update_dimensions()
-        self.setWindowTitle(f"{doc.path.name}[*] — TIFview")
+        self.setWindowTitle(f"TIFview {__version__} — {doc.path.name}[*]")
         self.setWindowModified(False)
         self.rebuild_channels()
         self.invert.blockSignals(True)
@@ -1258,6 +1264,38 @@ class ViewerWindow(QMainWindow):
         layout.addWidget(buttons)
         dialog.exec()
 
+    @staticmethod
+    def application_location():
+        return Path(sys.executable).resolve() if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
+
+    def about_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("About TIFview")
+        layout = QVBoxLayout(dialog)
+        title = QLabel(f"TIFview {__version__}")
+        title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(title)
+        layout.addWidget(QLabel("Printing image, channel and layer viewer with pixel editing"))
+        layout.addWidget(QLabel("Running executable" if getattr(sys, "frozen", False) else "Source folder"))
+        location = QLineEdit(str(self.application_location()))
+        location.setReadOnly(True)
+        location.setToolTip(location.text())
+        layout.addWidget(location)
+        hint = QLabel("This location identifies the copy you are currently running.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.resize(640, 220)
+        return dialog
+
+    def show_about(self):
+        dialog = self.about_dialog()
+        dialog.exec()
+        dialog.deleteLater()
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls() and any(u.isLocalFile() for u in event.mimeData().urls()):
             event.acceptProposedAction()
@@ -1287,6 +1325,7 @@ class ViewerWindow(QMainWindow):
 
 def configure_application(app: QApplication):
     app.setApplicationName("TIFview")
+    app.setApplicationVersion(__version__)
     app.setStyle("Fusion")
     # The offscreen Qt platform on Windows has no system font discovery.
     # Loading a real font also makes reproducible UI previews readable.

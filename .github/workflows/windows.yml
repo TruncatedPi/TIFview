@@ -73,7 +73,9 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: executable-check
-          path: build/package-check.json
+          path: |
+            build/package-check.json
+            build/executable-version.json
           if-no-files-found: ignore
 
   release:
