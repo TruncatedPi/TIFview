@@ -1,4 +1,4 @@
-# TIFview 0.4.1
+# TIFview 0.4.2
 
 [![Windows checks](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml/badge.svg)](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml)
 
@@ -36,7 +36,7 @@ the other spots; click **Composite** to return to the colour image.
 **Windows 10/11, 64-bit (x64). Python is included in the portable download.**
 
 1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
-2. Download [**TIFview-0.4.1-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.4.1/TIFview-0.4.1-windows-x64.zip) and extract the entire ZIP.
+2. Download [**TIFview-0.4.2-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.4.2/TIFview-0.4.2-windows-x64.zip) and extract the entire ZIP.
 3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
 
 Keep the `_internal` folder with the executable. No Python installation, Git,
