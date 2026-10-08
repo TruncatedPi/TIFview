@@ -362,3 +362,62 @@ def test_svg_item_scene_position_matches_export_pixels(tmp_path, angle, dpi, raw
     renderer.render(painter, QRectF(0, 0, 1000, 1000))
     painter.end()
     assert image == exported
+
+
+@pytest.mark.parametrize("length", ["25.4mm", "2.54cm", "1in", "72pt", "6pc", "96px"])
+@pytest.mark.parametrize("inline", [False, True])
+def test_absolute_shape_and_stroke_lengths_match_svg_user_units(length, inline):
+    app = QApplication.instance() or QApplication([])
+    paint = f'style="fill:none;stroke:red;stroke-width:{length};stroke-dasharray:{length},48px;stroke-dashoffset:-{length}"' if inline else f'fill="none" stroke="red" stroke-width="{length}" stroke-dasharray="{length},48px" stroke-dashoffset="-{length}"'
+    raw = f'<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 400 400"><rect x="{length}" y="{length}" width="{length}" height="{length}" {paint}/></svg>'.encode()
+    artwork = SvgArtwork.from_bytes(raw)
+    root = ET.fromstring(artwork.raw)
+    rect = root.find(f"{{{SVG_NS}}}rect")
+    assert all(rect.get(key) == "96" for key in ("x", "y", "width", "height"))
+    if inline:
+        assert "stroke-width:96" in rect.get("style")
+        assert "stroke-dasharray:96 48" in rect.get("style")
+        assert "stroke-dashoffset:-96" in rect.get("style")
+    else:
+        assert rect.get("stroke-width") == "96"
+        assert rect.get("stroke-dasharray") == "96 48"
+        assert rect.get("stroke-dashoffset") == "-96"
+    assert artwork.geometry_bounds == pytest.approx((48, 48, 192, 192))
+    assert SvgArtwork.from_bytes(artwork.raw).raw == artwork.raw
+
+
+def test_mirrored_negative_viewbox_outline_uses_absolute_stroke_for_canvas_and_export(tmp_path):
+    from tifview.svg import canvas_fit
+    # Independent geometry oracle, with no customer artwork or sample pixels.
+    path = tmp_path / "SYNTHETIC-physical-stroke.tif"
+    tifffile.imwrite(path, np.zeros((1663, 4260), np.uint8), photometric="minisblack",
+                     metadata=None, resolution=(720, 720))
+    doc = load_image(path)
+    raw = b'<svg xmlns="http://www.w3.org/2000/svg" width="151mm" height="59.5mm" viewBox="-251 60 151 59.5"><path transform="matrix(-1,0,0,1,0,0)" style="stroke:green;stroke-width:0.05mm;fill:none" d="M251 60H100V119.5H251Z"/></svg>'
+    artwork = SvgArtwork.from_bytes(raw)
+    half = .05 * 96 / 25.4 / 2
+    assert artwork.geometry_bounds == pytest.approx((-251-half, 60-half, 151+2*half, 59.5+2*half))
+    assert canvas_fit(doc, artwork, Placement(width_mm=151, height_mm=59.5)) == (4286, 1693, 3, 3)
+    output = export_svg(doc, artwork, Placement(width_mm=151, height_mm=59.5))
+    exported_path = ET.fromstring(output).find(f".//{{{SVG_NS}}}path")
+    assert exported_path.get("d") == "M251 60H100V119.5H251Z"
+    assert exported_path.get("transform") == "matrix(-1,0,0,1,0,0)"
+    assert "stroke-width:0.188976377952756" in exported_path.get("style")
+
+
+@pytest.mark.parametrize("length", ["10%", "2em", "1e100mm", "calc(1mm + 1px)"])
+def test_unresolved_svg_lengths_are_rejected_before_incorrect_canvas_bounds(length):
+    raw = f'<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm"><rect width="10" height="10" stroke="red" stroke-width="{length}"/></svg>'.encode()
+    with pytest.raises(ValueError, match="lengths|range"):
+        SvgArtwork.from_bytes(raw)
+
+
+
+def test_inherited_absolute_svg_paint_lengths_skip_opaque_metadata():
+    app = QApplication.instance() or QApplication([])
+    raw = b'<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm" viewBox="0 0 200 200" style="stroke:red;stroke-width:1mm;fill:none"><metadata><private stroke-width="10%">unchanged</private></metadata><g><rect x="50" y="50" width="100" height="100"/></g></svg>'
+    artwork = SvgArtwork.from_bytes(raw)
+    half = 96 / 25.4 / 2
+    assert artwork.geometry_bounds == pytest.approx((50-half, 50-half, 100+2*half, 100+2*half))
+    root = ET.fromstring(artwork.raw)
+    assert root.find(f".//{{{SVG_NS}}}private").get("stroke-width") == "10%"

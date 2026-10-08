@@ -1,4 +1,4 @@
-TIFview 0.6.0 - printing image/channel/layer viewer, SVG alignment and pixel editor
+TIFview 0.6.1 - printing image/channel/layer viewer, SVG alignment and pixel editor
 
 Windows 10/11, 64-bit (x64).
 

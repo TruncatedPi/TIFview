@@ -1,4 +1,4 @@
-# TIFview 0.6.0
+# TIFview 0.6.1
 
 [![Windows checks](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml/badge.svg)](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml)
 
@@ -36,7 +36,7 @@ the other spots; click **Composite** to return to the colour image.
 **Windows 10/11, 64-bit (x64). Python is included in the portable download.**
 
 1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
-2. Download [**TIFview-0.6.0-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.6.0/TIFview-0.6.0-windows-x64.zip) and extract the entire ZIP.
+2. Download [**TIFview-0.6.1-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.6.1/TIFview-0.6.1-windows-x64.zip) and extract the entire ZIP.
 3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
 
 Keep the `_internal` folder with the executable. No Python installation, Git,
@@ -245,6 +245,11 @@ the SVG overlay. If you edit the TIFF too, save the TIFF copy first and then
 save the alignment job: the job associates with that most recently saved copy.
 Further image edits require saving a new TIFF and alignment job. Jobs do not
 store unsaved channel/layer edits. Originals stay untouched.
+
+SVG shape and stroke lengths can use numeric values or px, mm, cm, in, pt and
+pc. Absolute lengths are interpreted consistently for the preview, canvas fit
+and exported SVG. Percentage/font-relative lengths and length expressions are
+unsupported; convert them to numeric or absolute lengths before importing.
 
 ## Manage spot channels
 

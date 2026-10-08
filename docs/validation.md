@@ -383,3 +383,28 @@ validation with the user's actual larger TIFF/SVG pair.
 Expanded TIFF copies also update standard XMP TIFF/Exif pixel dimensions in
 attributes or elements, retaining other properties and namespace prefixes.
 This avoids stale original dimensions in the supplied Photoshop TIFF metadata.
+
+
+## Real SVG/TIFF pair and absolute geometry units (v0.6.1)
+
+A supplied grayscale TIFF (4260 x 1663, 8-bit, 720 DPI, one ordinary raster
+layer) was paired with a 151 x 59.5 mm SVG with a mirrored path, negative
+viewBox origin and a 0.05mm stroke. Qt SVG ignored the stroke unit suffix.
+The correction resolves absolute shape/stroke lengths to SVG/CSS user units
+before measuring, rendering, saving a job and exporting. Physical viewport,
+path coordinates and the reflection are retained. Independent synthetic tests
+cover equivalent mm/cm/in/pt/pc/px lengths, inherited/inline paint settings,
+dash offsets/lists, opaque metadata, explicit unresolved-length rejection and
+stroke-inclusive canvas bounds. The portable executable also checks an absolute
+stroke width from the frozen Qt SVG runtime.
+
+The corrected page is 4286 x 1693 (151.201 x 59.725 mm at 720 DPI). Separate
+keep-position and centred TIFF copies have exact original gray pixels, genuine
+unassociated transparent padding, unchanged ICC/DPI, retained raster records
+with translated bounds and identical compressed layer channel bytes. Native
+save/readback, exact canvas undo/redo and embedded alignment-job round trips
+pass. Displayed and exported SVG pixels compare exactly. Original TIFF and
+SVG hashes remain unchanged. Private copies, jobs, SVG exports, screenshots
+and a report stay under ignored validation/local/. Photoshop, PrintExp and
+cutter validation of these new files remains pending. The full local suite
+passes 651 checks including the private samples.

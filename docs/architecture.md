@@ -293,8 +293,9 @@ editing rather than silently replacing appearance.
 `svg.py` uses the Qt SVG module already provided by PySide6 Essentials. It admits
 self-contained static geometry with explicit physical page dimensions, bounded
 XML/geometry, validated paths/transforms and understood inline styles. Qt ignores
-SVG clipping/nested viewports, so clipping and out-of-page geometry are rejected
-on import. Export expresses the viewport mapping as ordinary affine groups,
+SVG clipping/nested viewports, so those constructs are rejected on import.
+Out-of-page geometry contributes to the optional expanded canvas. Export
+expresses the viewport mapping as ordinary affine groups,
 without raster images or clipping dependencies. The CSS/SVG 96 px/in rule maps
 unitless/px pages; image DPI separately maps millimetres into displayed samples.
 
@@ -342,3 +343,15 @@ to be saved first. Original image and SVG inputs remain protected.
 Expanded TIFF copies also update standard XMP TIFF/Exif pixel dimensions in
 attributes or elements, retaining other properties and namespace prefixes.
 This avoids stale original dimensions in the supplied Photoshop TIFF metadata.
+
+
+## Absolute SVG geometry lengths (v0.6.1)
+
+Qt SVG strips absolute unit suffixes on basic shape and stroke lengths. Import
+normalizes admitted geometry attributes, stroke width, dash offsets and dash
+lists (including inline/inherited paint styles) to numeric SVG/CSS user units
+before measuring bounds, rendering, embedding a job or exporting. The SVG 2
+96 px/in conversion happens before the existing viewBox transform. Root physical
+page dimensions, path coordinates, transforms and opaque metadata are retained.
+Percentage, font-relative and expression lengths are explicitly unsupported.
+This keeps a fitted canvas large enough for the same stroke in other viewers.

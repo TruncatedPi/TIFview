@@ -228,7 +228,10 @@ def run(image_path: str, report_path: str) -> int:
                                           window.doc.layer_stack.decode_layer(1).samples)
             # Exercise QtSvg from the frozen runtime, rather than assuming the
             # desktop module and its DLL were collected by the packager.
-            artwork = SvgArtwork.from_bytes(b'<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" fill="none" stroke="red"/></svg>')
+            artwork = SvgArtwork.from_bytes(b'<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" fill="none" stroke="red" stroke-width="0.05mm"/></svg>')
+            half_stroke = .05 * 96 / 25.4 / 2
+            np.testing.assert_allclose(artwork.geometry_bounds,
+                                       (2-half_stroke, 2-half_stroke, 16+2*half_stroke, 16+2*half_stroke))
             before_svg = window.doc.samples.copy()
             window.install_svg(artwork)
             window.vectors_panel.fields["x_mm"].setValue(5)
@@ -295,7 +298,7 @@ def run(image_path: str, report_path: str) -> int:
                                   "rebuilt image pyramid", "lazy Qt layer pixels", "layer visibility and order",
                                   "synchronized native layer composite and transparency", "saved compressed layer pixels",
                                   "mixed layer undo and redo", "frozen Qt SVG renderer and alignment undo/redo",
-                                  "physical SVG export and alignment job round trip", "native solid vector shape without cached pixels", "transparent canvas growth, raster layers, copy save and exact undo", "untouched source"])
+                                  "physical SVG export and alignment job round trip", "absolute SVG shape and stroke units", "native solid vector shape without cached pixels", "transparent canvas growth, raster layers, copy save and exact undo", "untouched source"])
         except Exception as exc:
             result.update(passed=False, error=traceback.format_exc())
         if window.previewer is not None:

@@ -97,6 +97,59 @@ def length_mm(value):
     return result
 
 
+# Qt strips unit suffixes on shape/stroke lengths instead of converting them.
+# Resolve absolute CSS lengths before either rendering or exporting; 1 in is
+# 96 user units, with the viewBox transform applied afterwards (SVG 2, 8.9).
+_USER_SCALE = {None: 1, "px": 1, "mm": 96 / 25.4, "cm": 96 / 2.54,
+               "in": 96, "pt": 96 / 72, "pc": 16}
+_GEOMETRY_LENGTHS = {"x", "y", "width", "height", "x1", "x2", "y1", "y2",
+                     "cx", "cy", "r", "rx", "ry"}
+_PAINT_LENGTHS = {"stroke-width", "stroke-dashoffset", "stroke-dasharray"}
+
+
+def _user_length(value):
+    match = _LENGTH.fullmatch(value)
+    if not match:
+        raise ValueError("Use numeric or absolute SVG lengths (px, mm, cm, in, pt or pc); percentages and font-relative lengths are unsupported.")
+    number = float(match[1]) * _USER_SCALE[match[2]]
+    if not math.isfinite(number) or abs(number) > 10**8:
+        raise ValueError("SVG coordinates exceed the supported range.")
+    return format(number, ".15g")
+
+
+def _paint_length(name, value):
+    if value.strip() == "inherit" or (name == "stroke-dasharray" and value.strip() == "none"):
+        return value
+    if name == "stroke-dasharray":
+        parts = re.split(r"[\s,]+", value.strip())
+        if not 0 < len(parts) <= 50000:
+            raise ValueError("SVG dash pattern exceeds the supported range.")
+        return " ".join(_user_length(part) for part in parts)
+    return _user_length(value)
+
+
+def _normalize_lengths(root):
+    def visit(element):
+        if element.tag.rsplit("}", 1)[-1] in ("metadata", "title", "desc"):
+            return
+        for name, value in list(element.attrib.items()):
+            if name in _GEOMETRY_LENGTHS and element is not root:
+                element.set(name, _user_length(value))
+            elif name in _PAINT_LENGTHS:
+                element.set(name, _paint_length(name, value))
+            elif name == "style":
+                declarations = []
+                for declaration in value.split(";"):
+                    prop, sep, setting = declaration.partition(":")
+                    if sep and prop.strip() in _PAINT_LENGTHS:
+                        declaration = prop.strip() + ":" + _paint_length(prop.strip(), setting.strip())
+                    declarations.append(declaration)
+                element.set(name, ";".join(declarations))
+        for child in element:
+            visit(child)
+    visit(root)
+
+
 def _root(raw):
     if not raw or len(raw) > MAX_SVG_BYTES:
         raise ValueError("SVG exceeds the 2 MiB limit or is empty.")
@@ -221,7 +274,9 @@ class SvgArtwork:
             # The first release deliberately admits paths instead of instances.
             if any(e.tag.rsplit("}", 1)[-1] == "use" for e in root.iter()):
                 raise ValueError("Expand SVG clone/use instances to paths before importing.")
-        # Canonical self-contained XML gives renderer/export the same viewport.
+        # Canonical self-contained XML gives renderer/export the same viewport
+        # and correct absolute shape/stroke lengths despite Qt's unit parsing.
+        _normalize_lengths(root)
         root.set("viewBox", " ".join(format(v, ".15g") for v in view_box))
         raw = ET.tostring(root, encoding="utf-8")
         renderer = QSvgRenderer(QByteArray(raw))
