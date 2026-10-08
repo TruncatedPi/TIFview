@@ -1,4 +1,4 @@
-# TIFview 0.5.0
+# TIFview 0.6.0
 
 [![Windows checks](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml/badge.svg)](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml)
 
@@ -36,7 +36,7 @@ the other spots; click **Composite** to return to the colour image.
 **Windows 10/11, 64-bit (x64). Python is included in the portable download.**
 
 1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
-2. Download [**TIFview-0.5.0-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.5.0/TIFview-0.5.0-windows-x64.zip) and extract the entire ZIP.
+2. Download [**TIFview-0.6.0-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.6.0/TIFview-0.6.0-windows-x64.zip) and extract the entire ZIP.
 3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
 
 Keep the `_internal` folder with the executable. No Python installation, Git,
@@ -191,7 +191,8 @@ inline fill/stroke styles. The overlay remains a vector at every zoom.
 - Set width/height in millimetres; **Keep SVG proportions** starts enabled.
 - Rotation is clockwise about the SVG viewport's top-left corner.
 - **Show SVG overlay** is a viewing control. Hide it to inspect image channels.
-- **Ctrl+Z/Ctrl+Y** in the Vectors tab undo/redo alignment; in Channels/Layers
+- **Ctrl+Z/Ctrl+Y** in the Vectors tab undo/redo alignment, then an immediately
+  preceding canvas change; in Channels/Layers
   they continue to undo/redo image edits.
 - **Save alignment job** writes a separate `.tifview.json` with the SVG and its
   placement, bound to the associated image's checksum, dimensions and DPI.
@@ -200,6 +201,30 @@ inline fill/stroke styles. The overlay remains a vector at every zoom.
 - **Export aligned SVG** writes vector paths on a page matching the displayed
   image's physical size. It includes the SVG even when the overlay is hidden.
 
+When the SVG page or its stroke/geometry extends beyond the TIFF canvas, an
+import dialog offers **Expand and import**, **Keep canvas**, or **Cancel**.
+**Transparent** is the default new-area background; **White** is also available.
+Keep the image position, or centre it in the expanded canvas. Size and placement
+use whole image pixels without resampling either the original image or SVG.
+Negative SVG extents receive left/top padding so the complete cut path fits.
+**Expand canvas to SVG** in the Vectors tab repeats this after alignment changes.
+
+Canvas growth retains every existing native channel sample. New spot pixels
+are white/no ink, saved selections are empty, and image-transparency padding
+is transparent (or opaque for White). An unassociated transparency channel is
+created when needed. Bit depth, channel names/order, ICC profile, orientation
+and print DPI remain intact. Undo/redo crops/recreates padding instead of keeping
+two full-image snapshots. Save the expanded **TIFF copy first**, then its alignment
+job; the original image stays untouched.
+
+Ordinary supported raster layers can be retained when their native composite
+matches the enlarged image. Centring shifts their rectangles and raster transform
+reference points while retaining compressed pixel bytes. Moving masked layers,
+vector/shape/text/smart-object dependencies, unsupported appearances, nonstandard
+layer orientations or white background padding can require a merged copy without
+layers. The save dialog gives the reason before saving; undo expansion to retain
+the original layer configuration. New expanded copies need Photoshop/RIP validation.
+
 TIFF resolution in inches/centimetres and common-format DPI supply physical
 calibration, including rotated images and non-square DPI. Images with no valid
 physical resolution cannot use alignment; set their print DPI in Photoshop.
@@ -207,8 +232,9 @@ SVG mm/cm/in/pt/pc sizes are retained; px/unitless dimensions use SVG's 96 px/in
 definition. A viewBox-only or percentage-sized SVG needs explicit page dimensions.
 
 Convert SVG text to outlines before import. Embedded images, effects, gradients,
-CSS stylesheets/classes, clipping masks, clone/use instances and geometry that
-extends beyond its SVG page are rejected with an explanation. Export/preview
+CSS stylesheets/classes, clipping masks and clone/use instances are rejected
+with an explanation. SVG geometry or strokes extending beyond the SVG page can
+now import completely; the canvas-fit dialog includes their full bounds. Export/preview
 alignment is tested with synthetic files, including rotation, viewport offsets,
 aspect ratios and anisotropic DPI. **A real TIFF/SVG pair and cutter workflow
 have not yet been validated.** SVG artwork is not burned into image pixels or

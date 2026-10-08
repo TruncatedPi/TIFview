@@ -36,11 +36,13 @@ class Layout:
     warnings: tuple[str, ...]
     channel_ids: tuple[int, ...]
     layer_state: object | None = None
+    canvas: object | None = None
+    layer_stack: object | None = None
 
     @classmethod
     def capture(cls, doc, channel_ids):
         return cls(tuple(doc.channels), doc.photoshop_resources, dict(doc.metadata),
-                   tuple(doc.warnings), tuple(channel_ids), doc.layer_state)
+                   tuple(doc.warnings), tuple(channel_ids), doc.layer_state, doc.canvas, doc.layer_stack)
 
     @property
     def bytes(self):
@@ -67,6 +69,26 @@ class StructuralPatch:
         return (self.before.bytes + self.after.bytes +
                 (0 if self.added_plane is None else self.added_plane.nbytes) +
                 (0 if self.deleted_plane is None else self.deleted_plane.nbytes))
+
+
+@dataclass
+class CanvasPatch:
+    before: Layout
+    after: Layout
+    width: int
+    height: int
+    left: int
+    top: int
+    transparent: bool
+    previous_state: int
+    next_state: int
+
+    @property
+    def bytes(self):
+        # Undo crops lossless padding; redo recreates it. No full-image snapshots.
+        stacks = [self.before.layer_stack, self.after.layer_stack]
+        unique = {id(stack.data): stack.data for stack in stacks if stack is not None}
+        return self.before.bytes + self.after.bytes + 128 + sum(len(data) for data in unique.values())
 
 
 @dataclass
@@ -177,7 +199,7 @@ class EditSession:
     def __init__(self, original: ImageDocument, history_limit: int = 128 * 2**20):
         self.original = self.document = original
         self._samples = None
-        self.history: list[Patch | StructuralPatch | LayerPatch] = []
+        self.history: list[Patch | StructuralPatch | LayerPatch | CanvasPatch] = []
         self.cursor = 0
         self.state = self.saved_state = self._sequence = 0
         self.history_limit = history_limit
@@ -231,6 +253,8 @@ class EditSession:
         # changes replace the plane layout and copy only on the next pixel edit.
         if self._samples is not None and not np.shares_memory(document.samples, self._samples):
             self._samples = None
+        if self.document.layer_stack is not None and self.document.layer_stack is not document.layer_stack:
+            self.document.layer_stack.clear_cache()
         self.document = document
         self._channel_ids = tuple(channel_ids)
 
@@ -306,6 +330,46 @@ class EditSession:
             return False
         self._structure(result, self.channel_ids)
         return True
+
+    def expand_canvas(self, width, height, left=0, top=0, transparent=True, origin_left=None, origin_top=None):
+        from .canvas import expand_document
+        result = expand_document(self.original, self.document, width, height, left, top, transparent, origin_left, origin_top)
+        if result is self.document:
+            return False
+        added = len(result.channels) > len(self.document.channels)
+        ids = (*self.channel_ids, self._next_channel_id) if added else self.channel_ids
+        patch = CanvasPatch(Layout.capture(self.document, self.channel_ids), Layout.capture(result, ids),
+                            width, height, left, top, transparent, self.state, self._sequence + 1)
+        self._push(patch)
+        self._sequence += 1
+        self.state = patch.next_state
+        self._adopt(result, ids)
+        if added:
+            self._next_channel_id += 1
+        return True
+
+    def _restore_canvas_patch(self, patch, forward):
+        from .canvas import pad_samples
+        doc = self.document
+        layout = patch.after if forward else patch.before
+        if forward:
+            samples = pad_samples(doc, patch.width, patch.height, patch.left, patch.top,
+                                  layout.channels, patch.transparent)
+        else:
+            before_size = patch.before.canvas.size if patch.before.canvas else (self.original.width, self.original.height)
+            width, height = before_size
+            displayed = doc.display_samples[patch.top:patch.top + height, patch.left:patch.left + width,
+                                            :len(layout.channels)]
+            inverse = {6: 8, 8: 6}.get(doc.orientation, doc.orientation)
+            samples = np.array(orient(displayed, inverse), order="C", copy=True)
+        result = replace(doc, samples=samples, channels=list(layout.channels),
+                         photoshop_resources=layout.resources, metadata=dict(layout.metadata),
+                         warnings=list(layout.warnings), canvas=layout.canvas,
+                         layer_stack=layout.layer_stack, layer_state=layout.layer_state,
+                         layer_merged_samples=samples if layout.metadata.get("layer_composite_applied") else None,
+                         layer_merged_transparency=next((c.index for c in layout.channels if c.kind == "Transparency"), None)
+                                                  if layout.metadata.get("layer_composite_applied") else None)
+        self._adopt(result, layout.channel_ids)
 
     def attach_layers(self, stack):
         """Attach a lazily decoded layer inventory without making an edit."""
@@ -447,7 +511,9 @@ class EditSession:
     def undo(self):
         if self.can_undo:
             patch = self.history[self.cursor - 1]
-            if isinstance(patch, LayerPatch):
+            if isinstance(patch, CanvasPatch):
+                self._restore_canvas_patch(patch, forward=False)
+            elif isinstance(patch, LayerPatch):
                 self._restore_layer_patch(patch, forward=False)
             elif isinstance(patch, StructuralPatch):
                 layout = patch.before
@@ -463,7 +529,9 @@ class EditSession:
     def redo(self):
         if self.can_redo:
             patch = self.history[self.cursor]
-            if isinstance(patch, LayerPatch):
+            if isinstance(patch, CanvasPatch):
+                self._restore_canvas_patch(patch, forward=True)
+            elif isinstance(patch, LayerPatch):
                 self._restore_layer_patch(patch, forward=True)
             elif isinstance(patch, StructuralPatch):
                 layout = patch.after

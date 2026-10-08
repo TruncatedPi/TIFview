@@ -37,10 +37,17 @@ def channel_sources(original: ImageDocument, edited: ImageDocument) -> list[int 
 
 
 def _validate_channel_layout(original: ImageDocument, edited: ImageDocument):
-    if (edited.samples.shape[:2] != original.samples.shape[:2] or edited.bits != original.bits or
+    if (edited.bits != original.bits or
             edited.samples.dtype != original.samples.dtype or edited.orientation != original.orientation or
             edited.color_mode != original.color_mode or edited.base_count != original.base_count):
         raise ValueError("Image dimensions, bit depth, orientation and colour mode must remain unchanged")
+    if edited.canvas is not None:
+        from .canvas import CanvasGeometry
+        if not isinstance(edited.canvas, CanvasGeometry):
+            raise ValueError("Invalid canvas expansion geometry")
+        edited.canvas.validate(original, edited)
+    elif edited.samples.shape[:2] != original.samples.shape[:2]:
+        raise ValueError("Image dimensions require a canvas expansion operation")
     if len(edited.channels) != edited.samples.shape[-1] or any(c.index != i for i, c in enumerate(edited.channels)):
         raise ValueError("Channel metadata does not match the sample planes")
     extras = edited.metadata.get("extra_samples")
@@ -71,7 +78,13 @@ def _validate_channel_layout(original: ImageDocument, edited: ImageDocument):
                            and edited.layer_state is not None and
                            not any(c.kind == "Transparency" for c in original.channels) and
                            sum(c.kind == "Transparency" for c in edited.channels) == 1)
-        if source is None and channel.kind != "Spot" and not generated_alpha:
+        canvas_alpha = (edited.canvas is not None and edited.canvas.generated_transparency
+                        and channel.kind == "Transparency" and not channel.associated
+                        and channel.name == "Transparency" and channel.display is None
+                        and edited.metadata.get("canvas_generated_transparency")
+                        and not any(c.kind == "Transparency" for c in original.channels)
+                        and sum(c.kind == "Transparency" for c in edited.channels) == 1)
+        if source is None and channel.kind != "Spot" and not generated_alpha and not canvas_alpha:
             raise ValueError("Only spot channels can be added")
         if source is not None and original.channels[source].kind == "Spot" and channel.kind != "Spot":
             raise ValueError("Spot channel types must remain intact")
@@ -93,6 +106,8 @@ def layer_preservation_reason(original: ImageDocument, edited: ImageDocument) ->
         sources = _validate_channel_layout(original, edited)
     except ValueError as exc:
         return str(exc)
+    if edited.canvas is not None and not edited.canvas.layers_preserved:
+        return edited.metadata.get("canvas_layer_reason", "The canvas change cannot retain the original Photoshop layers")
     if edited.metadata.get("layer_composite_applied"):
         from .layerediting import merged_pixels_match, validate_state
         if edited.layer_stack is None or edited.layer_state is None:
@@ -122,6 +137,38 @@ def layer_preservation_reason(original: ImageDocument, edited: ImageDocument) ->
             original.metadata[cached_key] = spot_structure_layer_reason(data, original.base_count)
         return original.metadata[cached_key]
     return None
+
+
+def canvas_xmp(value, width, height):
+    """Update only standard dimension properties; retain namespace prefixes."""
+    from xml.dom import minidom
+    raw = value.encode("utf-8") if isinstance(value, str) else bytes(value)
+    if len(raw) > 2 * 2**20:
+        raise ValueError("XMP is too large to update canvas dimensions safely")
+    text = raw.decode("utf-8-sig")
+    if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
+        raise ValueError("XMP contains unsupported document/entity declarations")
+    dom = minidom.parseString(text)
+    properties = {("http://ns.adobe.com/tiff/1.0/", "ImageWidth"): width,
+                  ("http://ns.adobe.com/tiff/1.0/", "ImageLength"): height,
+                  ("http://ns.adobe.com/exif/1.0/", "PixelXDimension"): width,
+                  ("http://ns.adobe.com/exif/1.0/", "PixelYDimension"): height}
+    changed = False
+    for element in dom.getElementsByTagName("*"):
+        for attribute in list(element.attributes.values()):
+            key = attribute.namespaceURI, attribute.localName
+            if key in properties:
+                attribute.value = str(properties[key])
+                changed = True
+        key = element.namespaceURI, element.localName
+        if key in properties:
+            if any(child.nodeType == child.ELEMENT_NODE for child in element.childNodes):
+                raise ValueError("Unsupported structured XMP dimension property")
+            for child in list(element.childNodes):
+                element.removeChild(child)
+            element.appendChild(dom.createTextNode(str(properties[key])))
+            changed = True
+    return dom.toxml(encoding="utf-8") if changed else raw
 
 
 def reduce_half(samples: np.ndarray) -> np.ndarray:
@@ -180,7 +227,11 @@ def save_tiff_copy(original: ImageDocument, edited: ImageDocument, filename: str
                     from .layers import LayerStack
                     from .layerediting import composite_samples, _protected_pixels
                     stack, state = edited.layer_stack, edited.layer_state
-                    if not isinstance(stack, LayerStack) or stack.data != layer_bytes:
+                    expected_layer_bytes = layer_bytes
+                    if edited.canvas is not None:
+                        from .canvas import layer_bytes as expanded_layer_bytes
+                        expected_layer_bytes = expanded_layer_bytes(original, edited.canvas, layer_bytes)
+                    if not isinstance(stack, LayerStack) or stack.data != expected_layer_bytes:
                         raise ValueError("The edited layers do not match the original Photoshop layer block")
                     composed = composite_samples(edited, stack, state)
                     indices, expected = _protected_pixels(edited, composed)
@@ -195,7 +246,11 @@ def save_tiff_copy(original: ImageDocument, edited: ImageDocument, filename: str
             for code in (700, 33723, 315, 33432):
                 tag = page.tags.get(code)
                 if tag:
-                    extra_tags.append((code, int(tag.dtype), tag.count, tag.value, False))
+                    if code == 700 and edited.canvas is not None:
+                        xmp = canvas_xmp(tag.value, edited.samples.shape[1], edited.samples.shape[0])
+                        extra_tags.append((700, 1, len(xmp), xmp, False))
+                    else:
+                        extra_tags.append((code, int(tag.dtype), tag.count, tag.value, False))
     else:
         dpi = original.metadata.get("dpi") or (72, 72)
         densities = [Fraction(str(value)).limit_denominator(1_000_000)

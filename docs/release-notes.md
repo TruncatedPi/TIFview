@@ -1,35 +1,35 @@
-Add basic vector support and TIFF/SVG alignment.
+Add an option to enlarge the TIFF canvas when importing a larger SVG.
 
-Download the [**TIFview 0.5.0 Windows x64 ZIP**](https://github.com/TruncatedPi/TIFview/releases/download/v0.5.0/TIFview-0.5.0-windows-x64.zip),
-extract the entire archive, and run **TIFview/TIFview.exe**. Rerun `setup.cmd`
-from the source ZIP for automatic updating. Python and Qt SVG are included.
+Download the [**TIFview 0.6.0 Windows x64 ZIP**](https://github.com/TruncatedPi/TIFview/releases/download/v0.6.0/TIFview-0.6.0-windows-x64.zip),
+extract the whole archive and run **TIFview/TIFview.exe**. Rerun `setup.cmd`
+from the source ZIP for automatic updating.
 
-Supported Photoshop solid shapes render from their closed additive paths even
-when the layer has no cached raster pixels. Solid fill/stroke colours, enable
-flags, physical widths, opacity, caps/joins and inside/outside alignment are
-interpreted. Layer visibility/order copies retain the original editable vector
-records and compressed layer pixels, and leave spot masks unchanged. Colour
-spaces must match the TIFF process mode. Complex fills, vector masks on raster
-layers, dashed strokes and other unsupported styles still report a reason.
-The exact original-composite check remains in place for visible layer baselines.
+The import dialog offers **Expand and import**, **Keep canvas**, or **Cancel**.
+New areas default to **Transparent**, with optional White padding and image
+centring. The full SVG page and stroke/geometry bounds are included, even when
+geometry extends beyond its own viewBox. Position, scale and pixel values are
+preserved; neither image nor SVG is resampled. The Vectors tab also has
+**Expand canvas to SVG** for fitting after alignment changes.
 
-Use **Vectors > Import SVG** for one static path/shape overlay. Position and size
-use millimetres calibrated by image DPI, with rotation, visibility and alignment
-undo/redo. A separate `.tifview.json` saves the SVG and alignment; **Export aligned
-SVG** preserves vectors on a page matching the TIFF physical size. Save image
-edits with **Save TIFF copy** separately, then save the job for that saved copy.
-The SVG overlay is not burned into the TIFF or converted to a Photoshop layer.
+Canvas undo/redo crops and recreates padding, avoiding full-image snapshots.
+Spot padding has no ink; native 8/16-bit samples, channel names/order, image
+transparency/association, ICC, print resolution and TIFF orientation are kept.
+Save the expanded TIFF copy first, then its alignment job. Source files remain
+untouched. SVG continues to stay separate from TIFF pixels.
 
-SVG text needs outlines. Unsupported images/effects, clipping, gradients,
-stylesheets, clones and geometry outside the SVG page are rejected explicitly.
-Physical size, SVG viewport mapping, rotated/non-square DPI, displayed/exported
-alignment, native 8/16-bit shape samples, original vector records, undo/redo and
-source protection have automated checks. The portable build also checks its
-actual Qt SVG renderer, job/export and native shape rendering.
+Compatible ordinary raster layers can be retained, with translated rectangles
+and reference points when centring; their compressed pixels remain exact.
+Vector/dependent layers, shifted raster masks, unsupported appearances, white
+padding or nonstandard layer orientation may require a merged copy. The TIFF
+save dialog explains the specific limitation before saving.
 
-The supplied rectangle now displays and can be shown/reordered in test copies.
-Their native merged samples, unchanged spots, original layer records and source
-checksum are verified. **Photoshop/PrintExp validation of these new vector copies
-is pending**, as is a representative real TIFF/SVG print-and-cut workflow.
-Antialiased vector edges may differ from Photoshop; some already-visible vector
-stacks can fail the exact baseline check and remain unavailable for layer edits.
+Native checks on the supplied large CMYK sample confirm unchanged original
+channels, transparent/no-ink padding, retained raster layer pixels and positions,
+saved-copy readback, exact undo/redo and unchanged source checksum. These new
+copies still need **Photoshop/PrintExp validation**. Synthetic and portable
+checks cover canvas sizing, 8/16-bit data, orientation, alpha association,
+layer retention, mixed history, SVG alignment and save/reopen.
+
+Expanded TIFF copies also update standard XMP TIFF/Exif pixel dimensions in
+attributes or elements, retaining other properties and namespace prefixes.
+This avoids stale original dimensions in the supplied Photoshop TIFF metadata.

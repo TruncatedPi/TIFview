@@ -249,6 +249,24 @@ def run(image_path: str, report_path: str) -> int:
             assert loaded_svg == artwork and loaded_placement == window.vectors_panel.placement
             np.testing.assert_array_equal(window.doc.samples, before_svg)
             window.vectors_panel.mark_saved()
+            drain_layers()
+            before_canvas = window.doc.samples.copy()
+            window.edits.expand_canvas(window.doc.width + 40, window.doc.height + 40, 20, 20)
+            window.edits_changed()
+            drain_layers()
+            expanded_pixels = window.doc.samples.copy()
+            assert window.doc.canvas.layers_preserved
+            np.testing.assert_array_equal(window.doc.display_samples[20:520, 20:740], before_canvas)
+            canvas_path = report.with_name(report.stem + "-canvas.tif")
+            if canvas_path.exists():
+                raise FileExistsError(canvas_path)
+            save_tiff_copy(window.edits.original, window.doc, canvas_path)
+            np.testing.assert_array_equal(load_image(canvas_path).samples, expanded_pixels)
+            window.edits.undo(); window.edits_changed(); drain_layers()
+            np.testing.assert_array_equal(window.doc.samples, before_canvas)
+            window.edits.redo(); window.edits_changed(); drain_layers()
+            np.testing.assert_array_equal(window.doc.samples, expanded_pixels)
+            window.vectors_panel.mark_saved()
             # Synthetic 25%-75% rectangle and solid RGB-red descriptor, with
             # no cached raster pixels (no private/customer data in the bundle).
             shape = read_shape({
@@ -277,7 +295,7 @@ def run(image_path: str, report_path: str) -> int:
                                   "rebuilt image pyramid", "lazy Qt layer pixels", "layer visibility and order",
                                   "synchronized native layer composite and transparency", "saved compressed layer pixels",
                                   "mixed layer undo and redo", "frozen Qt SVG renderer and alignment undo/redo",
-                                  "physical SVG export and alignment job round trip", "native solid vector shape without cached pixels", "untouched source"])
+                                  "physical SVG export and alignment job round trip", "native solid vector shape without cached pixels", "transparent canvas growth, raster layers, copy save and exact undo", "untouched source"])
         except Exception as exc:
             result.update(passed=False, error=traceback.format_exc())
         if window.previewer is not None:

@@ -127,6 +127,7 @@ class SvgArtwork:
     height_mm: float
     view_box: tuple[float, float, float, float]
     source_path: Path | None = field(default=None, compare=False, repr=False)
+    geometry_bounds: tuple[float, float, float, float] | None = None
 
     @classmethod
     def read(cls, path):
@@ -238,12 +239,24 @@ class SvgArtwork:
         probe.set("id", probe_id)
         probe_renderer = QSvgRenderer(QByteArray(ET.tostring(probe, encoding="utf-8")))
         bounds = probe_renderer.boundsOnElement(probe_id)
-        page_bounds = QRectF(*view_box).adjusted(-1e-6, -1e-6, 1e-6, 1e-6)
         if bounds.isEmpty():
             raise ValueError("SVG contains no visible geometry.")
-        if not page_bounds.contains(bounds):
-            raise ValueError("SVG geometry or stroke extends outside its viewBox. Expand the SVG page to contain the full cut path before importing.")
-        return cls(raw, Path(name).name, width, height, view_box)
+        return cls(raw, Path(name).name, width, height, view_box,
+                   geometry_bounds=(bounds.x(), bounds.y(), bounds.width(), bounds.height()))
+
+    def full_rect(self, width_mm, height_mm):
+        rect = QRectF(0, 0, width_mm, height_mm)
+        if self.geometry_bounds is None:
+            return rect
+        bx, by, bw, bh = self.view_box
+        sx, sy = width_mm / bw, height_mm / bh
+        if _root(self.raw).get("preserveAspectRatio", "xMidYMid meet") != "none":
+            sx = sy = min(sx, sy)
+        tx = -bx * sx + (width_mm - bw * sx) / 2
+        ty = -by * sy + (height_mm - bh * sy) / 2
+        transform = QTransform(sx, 0, 0, sy, tx, ty)
+        return rect.united(transform.mapRect(QRectF(*self.geometry_bounds)))
+
 
 
 @dataclass(frozen=True)
@@ -274,21 +287,22 @@ class SvgItem(QGraphicsItem):
         self.renderer.setAspectRatioMode(Qt.AspectRatioMode.IgnoreAspectRatio if aspect == "none"
                                          else Qt.AspectRatioMode.KeepAspectRatio)
         self.rect = QRectF(0, 0, artwork.width_mm, artwork.height_mm)
+        self._bounds = artwork.full_rect(artwork.width_mm, artwork.height_mm)
         self.setZValue(2)
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
     def boundingRect(self):
-        return self.rect
+        return self._bounds
 
     def paint(self, painter, option, widget=None):
         painter.save()
-        painter.setClipRect(self.rect, Qt.ClipOperation.IntersectClip)
         self.renderer.render(painter, self.rect)
         painter.restore()
 
     def place(self, placement, dpi):
         self.prepareGeometryChange()
         self.rect = QRectF(0, 0, placement.width_mm, placement.height_mm)
+        self._bounds = self.artwork.full_rect(placement.width_mm, placement.height_mm)
         transform = QTransform()
         transform.scale(dpi[0] / 25.4, dpi[1] / 25.4)
         transform.translate(placement.x_mm, placement.y_mm)
@@ -297,6 +311,20 @@ class SvgItem(QGraphicsItem):
         self.setVisible(placement.visible)
         self.update()
 
+
+
+def canvas_fit(doc, artwork, placement):
+    """Required displayed pixel page; no image or SVG resampling."""
+    dx, dy = doc.metadata["dpi"]
+    transform = QTransform()
+    transform.scale(dx / 25.4, dy / 25.4)
+    transform.translate(placement.x_mm, placement.y_mm)
+    transform.rotate(placement.angle)
+    bounds = transform.mapRect(artwork.full_rect(placement.width_mm, placement.height_mm))
+    # Avoid a spurious extra pixel from floating-point roundoff at a page edge.
+    x0, y0 = math.floor(min(0, bounds.left()) + 1e-7), math.floor(min(0, bounds.top()) + 1e-7)
+    x1, y1 = math.ceil(max(doc.width, bounds.right()) - 1e-7), math.ceil(max(doc.height, bounds.bottom()) - 1e-7)
+    return x1 - x0, y1 - y0, -x0, -y0
 
 def _fingerprint(path):
     digest = hashlib.sha256()
@@ -310,6 +338,8 @@ def job_data(doc, artwork, placement, image_path=None):
     dpi = doc.metadata.get("dpi")
     if dpi is None:
         raise ValueError("Image has no calibrated print resolution.")
+    if doc.canvas is not None and (image_path is None or Path(image_path).resolve() == doc.path.resolve()):
+        raise ValueError("Save the expanded TIFF copy first, then save its alignment job")
     image_path = Path(image_path or doc.path)
     return {"format": "TIFview SVG alignment", "version": 1,
             "image": {"name": image_path.name, "sha256": _fingerprint(image_path),

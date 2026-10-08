@@ -230,8 +230,8 @@ def test_svg_dtd_is_rejected_in_utf16_too():
 
 
 def test_svg_clipping_and_outside_page_geometry_are_rejected_explicitly():
-    with pytest.raises(ValueError, match="outside"):
-        SvgArtwork.from_bytes(SVG.replace(b'M20 30 L100 30 L100 60 L20 60 Z', b'M0 0 L200 0 L200 100 L0 100 Z'))
+    artwork = SvgArtwork.from_bytes(SVG.replace(b'M20 30 L100 30 L100 60 L20 60 Z', b'M0 0 L200 0 L200 100 L0 100 Z'))
+    assert artwork.full_rect(50, 25).width() > 100
     with pytest.raises(ValueError, match="clipPath"):
         SvgArtwork.from_bytes(SVG.replace(b'<path ', b'<defs><clipPath id="clip"/></defs><path '))
 

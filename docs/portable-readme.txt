@@ -1,4 +1,4 @@
-TIFview 0.5.0 - printing image/channel/layer viewer, SVG alignment and pixel editor
+TIFview 0.6.0 - printing image/channel/layer viewer, SVG alignment and pixel editor
 
 Windows 10/11, 64-bit (x64).
 
@@ -41,7 +41,7 @@ Photoshop/PrintExp validation is pending; complex vectors/masks remain limited.
 Vectors > Import SVG: overlay one self-contained SVG at its physical size.
 Use the Vectors tab to position/size in mm, rotate, or show/hide the overlay.
 Ctrl+Z/Y in that tab undo/redo alignment. Text must be converted to paths;
-images, effects, clipping, clones, stylesheets and cropped geometry are unsupported.
+images, effects, clipping, clones and stylesheets are unsupported.
 Save alignment job keeps SVG/placement in a separate .tifview.json. Open the
 associated TIFF first, then Open alignment job. Export aligned SVG keeps vectors
 on a page matching the TIFF's print size. The overlay is not added to TIFF pixels.
@@ -70,3 +70,12 @@ Reference annotation sidecars and PNG/PDF exports are planned. See README.md and
 docs/validation.md for verified behavior and limitations.
 
 Source, updates and issue reports: https://github.com/TruncatedPi/TIFview
+
+SVG larger than the image: choose Expand and import, Keep canvas or Cancel.
+Transparent new areas are the default; White is optional. Keep image position
+or centre it. No original pixels are resized. Spot padding contains no ink.
+Expand canvas to SVG repeats fitting after alignment changes. Canvas growth has
+exact undo/redo and saves into a separate TIFF copy; save that TIFF first, then
+the alignment job. Compatible raster layers can be retained; vector/dependent
+layers, shifted masks or white padding can require a merged copy. The save
+dialog explains this. New enlarged copies need Photoshop/PrintExp validation.

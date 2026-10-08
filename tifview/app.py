@@ -22,10 +22,10 @@ from .model import ImageDocument
 from .reader import load_image
 from .render import RenderCancelled, grayscale, render
 from .preview import PreviewCache, preview_key
-from .editing import EditSession, raster_shape
+from .editing import EditSession, CanvasPatch, raster_shape
 from .layerpanel import LayersPanel
 from .layers import LayerStack
-from .svg import Placement, SvgArtwork, SvgItem, export_svg, job_data, load_job
+from .svg import Placement, SvgArtwork, SvgItem, export_svg, job_data, load_job, canvas_fit
 from .vectorpanel import VectorsPanel
 from .writer import SaveOptions, layer_preservation_reason, save_tiff_copy
 
@@ -345,6 +345,38 @@ class SpotDialog(QDialog):
         return self.name.text(), self.color, self.solidity.value()
 
 
+class CanvasFitDialog(QDialog):
+    def __init__(self, doc, size, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("SVG needs a larger canvas")
+        layout = QVBoxLayout(self)
+        width, height, left, top = size
+        dx, dy = doc.metadata["dpi"]
+        label = QLabel(f"Image: {doc.width:,} × {doc.height:,} pixels\n"
+                       f"Required canvas: {width:,} × {height:,} pixels\n"
+                       f"{width * 25.4 / dx:.3f} × {height * 25.4 / dy:.3f} mm\n\n"
+                       "Pixels and SVG stay at their original scale. Canvas expansion is undoable and saved with Save TIFF copy.")
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        self.background = QComboBox()
+        self.background.addItems(["Transparent", "White"])
+        layout.addWidget(QLabel("New canvas area"))
+        layout.addWidget(self.background)
+        self.anchor = QComboBox()
+        self.anchor.addItems(["Keep image position", "Centre image in expanded canvas"])
+        layout.addWidget(QLabel("Image placement"))
+        layout.addWidget(self.anchor)
+        notice = QLabel("Spot padding contains no ink. Compatible raster layers are retained; vector or other dependent layers may require a merged copy. The TIFF save dialog explains any layer limitation.")
+        notice.setWordWrap(True)
+        layout.addWidget(notice)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons.rejected.connect(self.reject)
+        buttons.addButton("Expand and import", QDialogButtonBox.ButtonRole.AcceptRole).clicked.connect(self.accept)
+        buttons.addButton("Keep canvas", QDialogButtonBox.ButtonRole.ActionRole).clicked.connect(lambda: self.done(2))
+        layout.addWidget(buttons)
+        self.resize(550, 350)
+
+
 class TiffSaveDialog(QDialog):
     def __init__(self, original, edited, parent=None):
         super().__init__(parent)
@@ -569,6 +601,7 @@ class ViewerWindow(QMainWindow):
         self.vectors_panel.export_requested.connect(self.choose_export_svg)
         self.vectors_panel.placement_changed.connect(self.svg_placement_changed)
         self.vectors_panel.remove_requested.connect(self.remove_svg)
+        self.vectors_panel.expand_requested.connect(self.fit_svg_canvas)
         self.notice = QLabel()
         self.notice.setWordWrap(True)
         self.notice.setStyleSheet("background: #fff0cb; color: #563a00; padding: 8px;")
@@ -726,9 +759,37 @@ class ViewerWindow(QMainWindow):
         filename, _ = QFileDialog.getOpenFileName(self, "Import SVG overlay", str(self.doc.path.parent), "SVG (*.svg)")
         if filename:
             try:
-                self.install_svg(SvgArtwork.read(filename))
+                self.offer_svg_canvas(SvgArtwork.read(filename))
             except Exception as exc:
                 QMessageBox.warning(self, "Could not import SVG", str(exc))
+
+    def offer_svg_canvas(self, artwork, placement=None):
+        placement = placement or Placement(width_mm=artwork.width_mm, height_mm=artwork.height_mm)
+        size = canvas_fit(self.doc, artwork, placement)
+        if size == (self.doc.width, self.doc.height, 0, 0):
+            self.install_svg(artwork, placement)
+            return
+        dialog = CanvasFitDialog(self.doc, size, self)
+        response = dialog.exec()
+        if response == 2:
+            self.install_svg(artwork, placement)
+        elif response == QDialog.DialogCode.Accepted:
+            width, height, origin_left, origin_top = size
+            left, top = origin_left, origin_top
+            if dialog.anchor.currentIndex() == 1:
+                left, top = (width - self.doc.width) // 2, (height - self.doc.height) // 2
+            dx, dy = self.doc.metadata["dpi"]
+            shifted = replace(placement, x_mm=placement.x_mm + origin_left * 25.4 / dx,
+                              y_mm=placement.y_mm + origin_top * 25.4 / dy)
+            self._canvas_overlay = artwork, shifted
+            self.perform_layer_change("expand_canvas", width, height, left, top,
+                                      dialog.background.currentIndex() == 0, origin_left, origin_top)
+        dialog.deleteLater()
+
+    def fit_svg_canvas(self):
+        panel = self.vectors_panel
+        if panel.artwork is not None:
+            self.offer_svg_canvas(panel.artwork, panel.placement)
 
     def svg_placement_changed(self, placement):
         if self.view.svg_item is not None:
@@ -812,7 +873,8 @@ class ViewerWindow(QMainWindow):
     def tab_changed(self, *_):
         self.tool_combo.setCurrentIndex(0)
         self.set_controls()
-        if self.layer_mode() and self.doc and self.doc.metadata.get("has_photoshop_layers") and self.doc.layer_stack is None:
+        if (self.layer_mode() and self.doc and self.doc.metadata.get("has_photoshop_layers")
+                and self.doc.layer_stack is None and not self.doc.metadata.get("canvas_layer_reason")):
             if not self.layer_busy() and self.saver is None:
                 self.layer_loader = LayerLoader(self.edits.original)
                 self.layer_loader.loaded.connect(self.accept_layers)
@@ -839,6 +901,14 @@ class ViewerWindow(QMainWindow):
         self.refresh()
 
     def update_layers_panel(self):
+        if self.doc and self.doc.layer_stack is None and not self.doc.metadata.get("canvas_layer_reason"):
+            self.layers_panel.set_layers(None)
+            self.layers_panel.set_edit_reason(None)
+            return
+        if self.doc and self.doc.metadata.get("canvas_layer_reason"):
+            self.layers_panel.set_layers(None)
+            self.layers_panel.set_edit_reason(self.doc.metadata["canvas_layer_reason"] + ". Undo canvas expansion to inspect original layers.")
+            return
         if self.doc and self.doc.layer_stack:
             state = self.doc.layer_state
             self.layers_panel.set_layers(self.doc.layer_stack, state.order, state.visible)
@@ -848,7 +918,7 @@ class ViewerWindow(QMainWindow):
         self.refresh()
 
     def perform_layer_change(self, operation, *args):
-        if not self.edits or not self.doc.layer_stack or self.loader or self.saver or self.layer_busy():
+        if not self.edits or (operation != "expand_canvas" and not self.doc.layer_stack) or self.loader or self.saver or self.layer_busy():
             return
         if self.previewer:
             # Finish lazy decoding before asking the backend to use its cache.
@@ -858,11 +928,14 @@ class ViewerWindow(QMainWindow):
             return
         self.layer_editor = LayerEditor(self.edits, operation, args)
         self.layer_editor.changed.connect(self.edits_changed)
-        self.layer_editor.failed.connect(lambda message: QMessageBox.warning(self, "Could not change layers", message))
+        def failed(message):
+            self._canvas_overlay = None
+            QMessageBox.warning(self, "Could not expand canvas" if operation == "expand_canvas" else "Could not change layers", message)
+        self.layer_editor.failed.connect(failed)
         self.layer_editor.finished.connect(self.layer_edit_finished)
         self.layer_editor.start()
         self.set_controls()
-        self.statusBar().showMessage("Updating layer stack and merged channel pixels…")
+        self.statusBar().showMessage("Expanding canvas without resampling pixels…" if operation == "expand_canvas" else "Updating layer stack and merged channel pixels…")
 
     def layer_visibility_changed(self, index, visible):
         self.perform_layer_change("set_layer_visibility", index, visible)
@@ -875,7 +948,17 @@ class ViewerWindow(QMainWindow):
         worker.deleteLater()
         self.set_controls()
         self.refresh()
-        self.statusBar().showMessage("Layer stack ready · Ctrl+Z: undo · Save TIFF copy to keep changes")
+        pending = getattr(self, "_canvas_overlay", None)
+        self._canvas_overlay = None
+        if pending is not None:
+            artwork, placement = pending
+            if self.vectors_panel.artwork is not artwork:
+                self.install_svg(artwork, placement)
+            else:
+                self.tabs.setCurrentWidget(self.vectors_panel)
+            self.statusBar().showMessage("Canvas expanded · Ctrl+Z: undo · Save TIFF copy, then save its alignment job")
+        else:
+            self.statusBar().showMessage("Layer stack ready · Ctrl+Z: undo · Save TIFF copy to keep changes")
 
     def selected_channel_id(self):
         item = self.channels.currentItem()
@@ -1047,7 +1130,14 @@ class ViewerWindow(QMainWindow):
         self._last_tiff_copy = None
         selected_id = self.selected_channel_id() if selected_id is None else selected_id
         self.remember_channel_preferences()
+        old_origin = self.doc.canvas.origin_offset if self.doc.canvas else (0, 0)
         self.doc = self.edits.document
+        new_origin = self.doc.canvas.origin_offset if self.doc.canvas else (0, 0)
+        if self.vectors_panel.artwork is not None:
+            dx, dy = self.doc.metadata["dpi"]
+            self.vectors_panel.translate_canvas((new_origin[0] - old_origin[0]) * 25.4 / dx,
+                                                (new_origin[1] - old_origin[1]) * 25.4 / dy)
+            self.view.svg_item.place(self.vectors_panel.placement, (dx, dy))
         self._preview_version += 1
         self.preview_cache.clear()
         self._displayed_preview = None
@@ -1056,7 +1146,11 @@ class ViewerWindow(QMainWindow):
         self.update_layers_panel()
         self.update_dimensions()
         self.set_controls()
-        self.refresh()
+        if (self.layer_mode() and self.doc.layer_stack is None and self.doc.metadata.get("has_photoshop_layers")
+                and not self.doc.metadata.get("canvas_layer_reason")):
+            self.tab_changed()
+        else:
+            self.refresh()
 
     def refresh_thumbnails(self):
         self.channels.blockSignals(True)
@@ -1078,18 +1172,24 @@ class ViewerWindow(QMainWindow):
 
     def undo(self):
         if self.tabs.currentWidget() is self.vectors_panel:
-            if self.saver is None and self.loader is None and not self.layer_busy():
-                self.vectors_panel.undo()
-            return
+            if self.vectors_panel.can_undo:
+                if self.saver is None and self.loader is None and not self.layer_busy():
+                    self.vectors_panel.undo()
+                return
+            if not (self.edits and self.edits.can_undo and isinstance(self.edits.history[self.edits.cursor - 1], CanvasPatch)):
+                return
         if self.edits and self.saver is None and self.loader is None and self.previewer is None and not self.layer_busy():
             self.edits.undo()
             self.edits_changed()
 
     def redo(self):
         if self.tabs.currentWidget() is self.vectors_panel:
-            if self.saver is None and self.loader is None and not self.layer_busy():
-                self.vectors_panel.redo()
-            return
+            if self.vectors_panel.can_redo:
+                if self.saver is None and self.loader is None and not self.layer_busy():
+                    self.vectors_panel.redo()
+                return
+            if not (self.edits and self.edits.can_redo and isinstance(self.edits.history[self.edits.cursor], CanvasPatch)):
+                return
         if self.edits and self.saver is None and self.loader is None and self.previewer is None and not self.layer_busy():
             self.edits.redo()
             self.edits_changed()
@@ -1181,6 +1281,11 @@ class ViewerWindow(QMainWindow):
         history_enabled = not busy and (not rendering or history is self.vectors_panel)
         self.undo_action.setEnabled(bool(history and history.can_undo and history_enabled))
         self.redo_action.setEnabled(bool(history and history.can_redo and history_enabled))
+        if history is self.vectors_panel and self.edits and not busy and not rendering:
+            if not history.can_undo and self.edits.can_undo and isinstance(self.edits.history[self.edits.cursor - 1], CanvasPatch):
+                self.undo_action.setEnabled(True)
+            if not history.can_redo and self.edits.can_redo and isinstance(self.edits.history[self.edits.cursor], CanvasPatch):
+                self.redo_action.setEnabled(True)
         self.edit_toolbar.setEnabled(editable and selected is not None and not busy and not rendering and self.tabs.currentIndex() == 0)
         self.channels.setEnabled(self.loader is None)
         self.view.drawing_enabled = editable and selected is not None and not busy and not rendering and self.tabs.currentIndex() == 0
@@ -1200,6 +1305,8 @@ class ViewerWindow(QMainWindow):
                 note = stack.composite_reason(state.order, state.visible)
                 if note:
                     self.layers_panel.notice.setText("Showing saved TIFF composite. Layer-stack rendering unavailable: " + note)
+        if self.doc and self.doc.metadata.get("canvas_layer_reason"):
+            self.layers_panel.set_edit_reason(self.doc.metadata["canvas_layer_reason"] + ". Undo canvas expansion to inspect original layers.")
         if not editable or selected is None or busy or self.layer_mode():
             self.tool_combo.setCurrentIndex(0)
             self.view.set_tool("Pan")
@@ -1251,6 +1358,9 @@ class ViewerWindow(QMainWindow):
             self.refresh()
 
     def preview_settings(self):
+        if self.layer_mode() and self.doc.metadata.get("canvas_layer_reason"):
+            return (self._preview_version, 1, "canvas-composite"), dict(selected=None,
+                    visible={c.index for c in self.doc.channels if c.index < self.doc.base_count or c.kind == "Transparency"})
         if self.layer_mode() and self.doc.layer_stack:
             index = self.layers_panel.selected_index()
             stride = self.layer_preview_stride()
@@ -1279,7 +1389,7 @@ class ViewerWindow(QMainWindow):
     def refresh(self):
         if self.doc is None or self.loader is not None or self.layer_busy():
             return
-        if self.layer_mode() and self.doc.layer_stack is None:
+        if self.layer_mode() and self.doc.layer_stack is None and not self.doc.metadata.get("canvas_layer_reason"):
             if self.previewer:
                 self.previewer.requestInterruption()
             self._requested_preview = self._displayed_preview = self._pending_preview = None

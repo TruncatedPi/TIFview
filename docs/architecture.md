@@ -309,3 +309,36 @@ imported SVG. Real vector-copy/cutter validation remains a separate milestone.
 References: [Adobe Photoshop formats](https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/),
 [Qt SVG rendering](https://doc.qt.io/qt-6.11/qsvgrenderer.html), and
 [SVG viewport units](https://www.w3.org/TR/SVG2/coords.html#Units).
+
+
+## Lossless canvas expansion (v0.6.0)
+
+`canvas.py` pads native displayed-coordinate planes and restores TIFF storage
+orientation. Original pixels are copied without resampling. Spots receive no-ink
+values, saved selections empty coverage, and image transparency defaults to zero.
+Opaque originals receive an explicit unassociated TIFF transparency sample.
+A validated CanvasGeometry records source/target dimensions, cumulative image
+and SVG-origin offsets, generated transparency and raster-layer retention.
+
+Canvas history stores small layouts and geometry rather than pixel snapshots:
+undo crops padding, redo regenerates it. Rebased LayerStack parents use a tiny
+broadcast array for canvas dimensions rather than retaining large sample buffers;
+layer records are included in the history budget and inactive caches are cleared.
+Compatible raster records keep compressed chunks. Translated unmasked raster
+rectangles and reference points are rewritten conservatively; dependent vector
+metadata and other unsupported relationships require an explicitly merged copy.
+The writer independently checks canvas dimensions, channel identities, original
+layer bytes plus permitted coordinate changes, and native recomposition before
+publishing a reopened/verified TIFF copy.
+
+SVG visible bounds and its physical viewport both contribute to canvas fitting,
+including rotation and anisotropic DPI. Geometry outside its own page is admitted
+and rendered completely, with no clipping. The dialog offers transparent/white
+padding, preserving position or centring, keeping the canvas, and cancellation.
+Expansion runs through the background image editor. Alignment coordinates follow
+canvas origin shifts across undo/redo; alignment jobs require the expanded TIFF
+to be saved first. Original image and SVG inputs remain protected.
+
+Expanded TIFF copies also update standard XMP TIFF/Exif pixel dimensions in
+attributes or elements, retaining other properties and namespace prefixes.
+This avoids stale original dimensions in the supplied Photoshop TIFF metadata.

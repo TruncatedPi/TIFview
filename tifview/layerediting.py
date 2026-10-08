@@ -79,6 +79,12 @@ def require_unchanged_merged_pixels(original: ImageDocument, current: ImageDocum
     if not matches:
         raise ValueError("Process or image-transparency pixels were painted separately from the layers. "
                          "Undo those pixel edits before changing layer visibility or order.")
+    if current.canvas is not None:
+        # Expansion already proved the original pixels and the rebased raster
+        # stack. The current merged proof above catches later independent paint.
+        if not current.canvas.layers_preserved:
+            raise ValueError("This canvas change requires a merged TIFF copy")
+        return
     # A supported baseline must match the authoritative primary TIFF. This
     # catches unmodelled Photoshop document settings or stale merged pixels
     # before an otherwise small layer change replaces unrelated appearance.

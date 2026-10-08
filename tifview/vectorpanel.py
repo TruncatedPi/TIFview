@@ -1,4 +1,5 @@
 """One SVG cut/artwork overlay, calibrated to the displayed image in mm."""
+from dataclasses import replace
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout,
                                QLabel, QPushButton, QVBoxLayout, QWidget)
@@ -13,6 +14,7 @@ class VectorsPanel(QWidget):
     export_requested = Signal()
     placement_changed = Signal(object)
     remove_requested = Signal()
+    expand_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -58,6 +60,9 @@ class VectorsPanel(QWidget):
         self.lock.setChecked(True)
         form.addRow(self.lock)
         layout.addWidget(self.form)
+        self.expand_button = QPushButton("Expand canvas to SVG…")
+        self.expand_button.clicked.connect(self.expand_requested)
+        layout.addWidget(self.expand_button)
         self.save_button = QPushButton("Save alignment job…")
         self.save_button.clicked.connect(self.save_requested)
         self.load_button = QPushButton("Open alignment job…")
@@ -79,7 +84,7 @@ class VectorsPanel(QWidget):
         self.import_button.setEnabled(enabled)
         self.load_button.setEnabled(enabled)
         present = enabled and self.artwork is not None
-        for control in (self.form, self.visible, self.save_button, self.export_button, self.remove_button):
+        for control in (self.form, self.visible, self.save_button, self.export_button, self.remove_button, self.expand_button):
             control.setEnabled(present)
 
     def set_artwork(self, artwork=None, placement=None, dirty=False):
@@ -98,6 +103,16 @@ class VectorsPanel(QWidget):
             for key, field in self.fields.items():
                 field.setValue(getattr(placement, key))
         self._updating = False
+
+    def translate_canvas(self, x_mm, y_mm):
+        if self.placement is None or not (x_mm or y_mm):
+            return
+        def moved(placement):
+            return replace(placement, x_mm=placement.x_mm + x_mm, y_mm=placement.y_mm + y_mm)
+        self._history = [moved(p) for p in self._history]
+        if self._saved is not None:
+            self._saved = moved(self._saved)
+        self._display(moved(self.placement))
 
     @property
     def can_undo(self):

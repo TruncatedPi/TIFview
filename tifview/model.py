@@ -9,6 +9,7 @@ import numpy as np
 from .photoshop import DisplayInfo
 
 if TYPE_CHECKING:
+    from .canvas import CanvasGeometry
     from .layerediting import LayerState
     from .layers import LayerStack
 
@@ -62,6 +63,7 @@ class ImageDocument:
     layer_state: LayerState | None = None
     layer_merged_samples: np.ndarray | None = field(default=None, repr=False)
     layer_merged_transparency: int | None = None
+    canvas: CanvasGeometry | None = field(default=None, repr=False)
 
     def __post_init__(self):
         self.samples.flags.writeable = False

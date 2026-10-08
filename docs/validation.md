@@ -356,3 +356,30 @@ validated. The imported SVG remains a separate vector overlay/export. Some
 already-visible Photoshop vector stacks will fail the exact native baseline
 check because of antialiasing or other unmodelled settings; they remain blocked
 from layer edits rather than receiving an approximate replacement silently.
+
+
+## Expanded canvas for larger SVG imports (v0.6.0)
+
+Synthetic checks cover transparent/white padding, no-ink spot borders, empty
+saved selections, genuine generated alpha and existing associated/unassociated
+transparency, native RGB/CMYK/grayscale 8/16-bit pixels, all eight orientations,
+unchanged DPI, exact mixed undo/redo and saved-copy readback. Other checks cover
+raster-layer coordinate changes with original compressed chunks, explicit merged
+export for vector dependencies, rejection of unattested dimensions, negative
+SVG/stroke bounds and import expand/keep/cancel choices. A large expansion fits
+a small history budget without retaining full pixel snapshots. The portable
+executable check covers canvas growth, retained rasters, save/readback and undo.
+
+A private 7200 x 2160 CMYK sample was expanded to 7300 x 2260 with a 50-pixel
+transparent border. Original samples remain exact in the shifted region; white
+spot padding has no ink, the two raster rectangles move by 50 pixels, and their
+compressed channel bytes remain unchanged. Native save/reopen and exact undo/
+redo pass; the original source SHA-256 is unchanged. The operation took about
+12.9 seconds locally including verification, with a roughly 3.8 MiB history
+record. The copy/report stay under ignored validation/local/canvas/.
+Photoshop/PrintExp validation of this **new expanded copy** is pending, as is
+validation with the user's actual larger TIFF/SVG pair.
+
+Expanded TIFF copies also update standard XMP TIFF/Exif pixel dimensions in
+attributes or elements, retaining other properties and namespace prefixes.
+This avoids stale original dimensions in the supplied Photoshop TIFF metadata.
