@@ -15,6 +15,7 @@ class VectorsPanel(QWidget):
     placement_changed = Signal(object)
     remove_requested = Signal()
     expand_requested = Signal()
+    layer_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -63,6 +64,9 @@ class VectorsPanel(QWidget):
         self.expand_button = QPushButton("Expand canvas to SVG…")
         self.expand_button.clicked.connect(self.expand_requested)
         layout.addWidget(self.expand_button)
+        self.layer_button = QPushButton("Add SVG as layer…")
+        self.layer_button.clicked.connect(self.layer_requested)
+        layout.addWidget(self.layer_button)
         self.save_button = QPushButton("Save alignment job…")
         self.save_button.clicked.connect(self.save_requested)
         self.load_button = QPushButton("Open alignment job…")
@@ -74,7 +78,8 @@ class VectorsPanel(QWidget):
         for button in (self.save_button, self.load_button, self.export_button, self.remove_button):
             layout.addWidget(button)
         self.notice = QLabel("Open an image, then import a self-contained SVG. Text must be converted to paths. "
-                             "Position and size use the image's print resolution. SVG stays separate from TIFF pixels and spots.")
+                             "Position and size use the image's print resolution. Add SVG as layer renders a new "
+                             "Photoshop pixel layer for TIFF saving. The original SVG can still be exported separately.")
         self.notice.setWordWrap(True)
         layout.addWidget(self.notice)
         layout.addStretch()
@@ -84,7 +89,7 @@ class VectorsPanel(QWidget):
         self.import_button.setEnabled(enabled)
         self.load_button.setEnabled(enabled)
         present = enabled and self.artwork is not None
-        for control in (self.form, self.visible, self.save_button, self.export_button, self.remove_button, self.expand_button):
+        for control in (self.form, self.visible, self.save_button, self.export_button, self.remove_button, self.expand_button, self.layer_button):
             control.setEnabled(present)
 
     def set_artwork(self, artwork=None, placement=None, dirty=False):

@@ -79,6 +79,10 @@ def require_unchanged_merged_pixels(original: ImageDocument, current: ImageDocum
     if not matches:
         raise ValueError("Process or image-transparency pixels were painted separately from the layers. "
                          "Undo those pixel edits before changing layer visibility or order.")
+    if current.generated_layer_data is not None:
+        if stack.data != current.generated_layer_data:
+            raise ValueError("The generated Photoshop layers have changed unexpectedly")
+        return
     if current.canvas is not None:
         # Expansion already proved the original pixels and the rebased raster
         # stack. The current merged proof above catches later independent paint.

@@ -64,6 +64,7 @@ class ImageDocument:
     layer_merged_samples: np.ndarray | None = field(default=None, repr=False)
     layer_merged_transparency: int | None = None
     canvas: CanvasGeometry | None = field(default=None, repr=False)
+    generated_layer_data: bytes | None = field(default=None, repr=False)
 
     def __post_init__(self):
         self.samples.flags.writeable = False

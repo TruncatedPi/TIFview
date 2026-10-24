@@ -1,4 +1,4 @@
-# TIFview 0.6.1
+# TIFview 0.7.0
 
 [![Windows checks](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml/badge.svg)](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml)
 
@@ -36,7 +36,7 @@ the other spots; click **Composite** to return to the colour image.
 **Windows 10/11, 64-bit (x64). Python is included in the portable download.**
 
 1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
-2. Download [**TIFview-0.6.1-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.6.1/TIFview-0.6.1-windows-x64.zip) and extract the entire ZIP.
+2. Download [**TIFview-0.7.0-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.7.0/TIFview-0.7.0-windows-x64.zip) and extract the entire ZIP.
 3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
 
 Keep the `_internal` folder with the executable. No Python installation, Git,
@@ -182,8 +182,8 @@ workflow; unsupported layer features remain subject to the restrictions above.
 
 ## Align TIFF and SVG for print-and-cut
 
-Open an image, then use **Vectors → Import SVG** or the **Vectors** tab. This
-first version supports one self-contained SVG overlay with paths, rectangles,
+Open an image, then use **Vectors → Import SVG** or the **Vectors** tab. Import
+one self-contained SVG overlay at a time, with paths, rectangles,
 ellipses/circles, lines and polygons, including ordinary group transforms and
 inline fill/stroke styles. The overlay remains a vector at every zoom.
 
@@ -236,15 +236,41 @@ CSS stylesheets/classes, clipping masks and clone/use instances are rejected
 with an explanation. SVG geometry or strokes extending beyond the SVG page can
 now import completely; the canvas-fit dialog includes their full bounds. Export/preview
 alignment is tested with synthetic files, including rotation, viewport offsets,
-aspect ratios and anisotropic DPI. **A real TIFF/SVG pair and cutter workflow
-have not yet been validated.** SVG artwork is not burned into image pixels or
-turned into a Photoshop shape layer in this milestone.
+aspect ratios and anisotropic DPI, plus the supplied TIFF/SVG pair. New saved
+pixel-layer copies still need Photoshop/PrintExp validation.
 
-**Save TIFF copy** saves channel/layer changes separately; it does not include
-the SVG overlay. If you edit the TIFF too, save the TIFF copy first and then
-save the alignment job: the job associates with that most recently saved copy.
-Further image edits require saving a new TIFF and alignment job. Jobs do not
-store unsaved channel/layer edits. Originals stay untouched.
+Use **Add SVG as layer…** to create a named Photoshop **pixel layer** at the
+TIFF's resolution. It becomes part of the image and appears in the **Layers**
+tab, where it can be viewed alone, hidden, shown or reordered. Undo/redo includes
+layer creation. Then **Save TIFF copy** with **Retain Photoshop layers** enabled.
+If an SVG overlay is still pending when saving, the app offers to add it as a
+layer; saving without the SVG is an explicit alternative.
+
+New artwork uses the document's colour mode and embedded ICC profile. A grayscale
+TIFF produces a grayscale layer; CMYK produces process-colour pixels. Original
+spot and saved-alpha masks are unaffected. Existing compatible layers keep their
+compressed pixel data. A file without Photoshop layers gains an Original image
+layer underneath the SVG. Layer creation currently requires orientation 1 and a
+supported layer composite that matches the image; unsupported stacks or separately
+painted process/transparency pixels require saving/reopening a merged copy first.
+The full SVG must fit the canvas; enlarge or reposition it before adding the layer.
+The SVG layer is raster artwork, not an editable Photoshop vector or smart object.
+
+For an overlay-only alignment job, save the TIFF copy first, then the alignment
+job. Jobs preserve the original SVG geometry for later vector export, but do not
+store unsaved channel/layer edits. Export/save that job before converting the SVG
+to a pixel layer if you want to retain the vector alignment too.
+
+### Set canvas dimensions or grow selected edges
+
+Click **Canvas size…** on the toolbar. Enter a new width/height and choose a
+nine-position anchor, or choose **Add to selected edges** and enter independent
+left, top, right and bottom amounts. Units can be pixels or millimetres when the
+image has print DPI. The dialog shows the resulting pixel dimensions and physical
+size; values round to whole source pixels. Transparent padding is the default.
+Canvas growth supports undo/redo and moves pending SVG alignment with the image.
+Cropping to a smaller canvas is not implemented. The usual layer-preservation
+limitations shown in the TIFF save dialog still apply.
 
 SVG shape and stroke lengths can use numeric values or px, mm, cm, in, pt and
 pc. Absolute lengths are interpreted consistently for the preview, canvas fit
@@ -437,7 +463,8 @@ See [architecture and resource rules](docs/architecture.md).
 
 1. **Current:** channel and cached-layer inspection, supported layer visibility/order,
    spot creation/deletion/reordering/properties, ellipse/box/line/text raster edits, undo/redo,
-   solid Photoshop shape rendering, SVG alignment/jobs/vector export,
+   solid Photoshop shape rendering, SVG alignment/jobs/vector export, SVG pixel layers,
+   manual canvas growth,
    verified TIFF-copy export and portable Windows packaging. Validate edited
    copies on more Photoshop/RIP configurations and collect more real save variants.
 2. **Planned:** layer-aware process editing and tiled loading beyond the current RAM limits.

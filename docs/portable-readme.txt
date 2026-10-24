@@ -1,4 +1,4 @@
-TIFview 0.6.1 - printing image/channel/layer viewer, SVG alignment and pixel editor
+TIFview 0.7.0 - printing image/channel/layer viewer, SVG alignment and pixel editor
 
 Windows 10/11, 64-bit (x64).
 
@@ -44,9 +44,19 @@ Ctrl+Z/Y in that tab undo/redo alignment. Text must be converted to paths;
 images, effects, clipping, clones and stylesheets are unsupported.
 Save alignment job keeps SVG/placement in a separate .tifview.json. Open the
 associated TIFF first, then Open alignment job. Export aligned SVG keeps vectors
-on a page matching the TIFF's print size. The overlay is not added to TIFF pixels.
+on a page matching the TIFF's print size.
+Add SVG as layer creates a named Photoshop pixel layer at the TIFF resolution.
+Hide/show and reorder it in Layers, then Save TIFF copy with layers retained.
+Saving with a pending overlay offers to add it instead of silently omitting it.
+Grayscale documents create gray layers; CMYK/RGB use the document colour mode
+and ICC profile. The original spot masks remain unchanged. Unsupported layer
+composites require saving/reopening a merged copy before adding artwork.
+Canvas size on the toolbar accepts width/height with a nine-position anchor,
+or separate left/top/right/bottom growth. Pixels or mm; transparent by default.
+Smaller-canvas cropping is not yet implemented.
 Save TIFF edits first, then save the alignment job to associate with that copy.
-The first SVG workflow is tested synthetically; real print/cut validation is pending.
+SVG alignment and saved pixel layers are tested with synthetic files and the
+supplied TIFF/SVG pair; new Photoshop/PrintExp and print/cut validation is pending.
 Content Credentials metadata does not block TIFF saving. Credentials are omitted
 from saved copies because this app cannot update their signature after editing.
 

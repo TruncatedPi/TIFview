@@ -38,11 +38,13 @@ class Layout:
     layer_state: object | None = None
     canvas: object | None = None
     layer_stack: object | None = None
+    generated_layer_data: bytes | None = None
 
     @classmethod
     def capture(cls, doc, channel_ids):
         return cls(tuple(doc.channels), doc.photoshop_resources, dict(doc.metadata),
-                   tuple(doc.warnings), tuple(channel_ids), doc.layer_state, doc.canvas, doc.layer_stack)
+                   tuple(doc.warnings), tuple(channel_ids), doc.layer_state, doc.canvas, doc.layer_stack,
+                   doc.generated_layer_data)
 
     @property
     def bytes(self):
@@ -129,7 +131,11 @@ class LayerPatch:
 
     @property
     def bytes(self):
+        stacks = (self.before.layer_stack, self.after.layer_stack)
+        changed = self.before.layer_stack is not self.after.layer_stack
+        unique = {id(s.data): s.data for s in stacks if s is not None} if changed else {}
         return (self.before.bytes + self.after.bytes +
+                sum(len(data) for data in unique.values()) +
                 (0 if self.pixels is None else self.pixels.bytes) +
                 (0 if self.added_plane is None else self.added_plane.nbytes))
 
@@ -366,6 +372,7 @@ class EditSession:
                          photoshop_resources=layout.resources, metadata=dict(layout.metadata),
                          warnings=list(layout.warnings), canvas=layout.canvas,
                          layer_stack=layout.layer_stack, layer_state=layout.layer_state,
+                         generated_layer_data=layout.generated_layer_data,
                          layer_merged_samples=samples if layout.metadata.get("layer_composite_applied") else None,
                          layer_merged_transparency=next((c.index for c in layout.channels if c.kind == "Transparency"), None)
                                                   if layout.metadata.get("layer_composite_applied") else None)
@@ -401,6 +408,15 @@ class EditSession:
             return False
         layerediting.require_unchanged_merged_pixels(self.original, doc, stack)
         result, added = layerediting.recompose_document(doc, stack, state)
+        return self._record_layer_change(result, added)
+
+    def add_svg_layer(self, artwork, placement, name):
+        from .svglayer import add_svg_layer
+        result, added = add_svg_layer(self.original, self.document, artwork, placement, name)
+        return self._record_layer_change(result, added)
+
+    def _record_layer_change(self, result, added):
+        doc = self.document
         indices = tuple(range(doc.base_count)) + tuple(c.index for c in doc.channels if c.kind == "Transparency")
         old, new = doc.display_samples, result.display_samples
         difference = np.zeros(old.shape[:2], dtype=bool)
@@ -410,6 +426,9 @@ class EditSession:
         ids = (*self.channel_ids, self._next_channel_id) if added else self.channel_ids
         before_layout, after_layout = Layout.capture(doc, self.channel_ids), Layout.capture(result, ids)
         required = before_layout.bytes + after_layout.bytes + (result.samples[..., -1].nbytes if added else 0)
+        if before_layout.layer_stack is not after_layout.layer_stack:
+            stacks = (before_layout.layer_stack, after_layout.layer_stack)
+            required += sum(len(data) for data in {id(s.data): s.data for s in stacks if s is not None}.values())
         if required > self.history_limit:
             raise ValueError("Layer change exceeds the 128 MiB undo limit")
         if np.any(difference):
@@ -553,7 +572,8 @@ class EditSession:
         document = spots.restore_layout(self.document, layout.channels, layout.resources,
                                         layout.metadata, order, patch.added_plane if forward else None,
                                         layout.warnings)
-        self._adopt(replace(document, layer_state=layout.layer_state), layout.channel_ids)
+        self._adopt(replace(document, layer_state=layout.layer_state, layer_stack=layout.layer_stack,
+                            canvas=layout.canvas, generated_layer_data=layout.generated_layer_data), layout.channel_ids)
         if patch.pixels is not None:
             self._toggle_layer_delta(patch.pixels)
         if self.document.metadata.get("layer_composite_applied"):

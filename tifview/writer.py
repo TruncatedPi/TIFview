@@ -98,9 +98,9 @@ def _validate_channel_layout(original: ImageDocument, edited: ImageDocument):
 
 
 def layer_preservation_reason(original: ImageDocument, edited: ImageDocument) -> str | None:
-    if not original.metadata.get("has_photoshop_layers"):
+    if not original.metadata.get("has_photoshop_layers") and edited.generated_layer_data is None:
         return None
-    if original.metadata.get("byte_order") != "IBM PC (little endian)":
+    if original.metadata.get("has_photoshop_layers") and original.metadata.get("byte_order") != "IBM PC (little endian)":
         return "Preserving Macintosh-byte-order layer blocks in an IBM-PC TIFF is not implemented."
     try:
         sources = _validate_channel_layout(original, edited)
@@ -125,7 +125,7 @@ def layer_preservation_reason(original: ImageDocument, edited: ImageDocument) ->
         protected = list(range(original.base_count)) + [c.index for c in original.channels if c.kind == "Transparency"]
         if any(not np.array_equal(original.samples[..., index], edited.samples[..., sources.index(index)]) for index in protected):
             return "CMYK/RGB or transparency pixels changed. The original Photoshop layers still contain the old image."
-    if sources != list(range(len(original.channels))):
+    if sources != list(range(len(original.channels))) and original.metadata.get("has_photoshop_layers"):
         from .layercheck import spot_structure_layer_reason
         cached_key = "spot_structure_layer_check"
         if cached_key not in original.metadata:
@@ -221,7 +221,7 @@ def save_tiff_copy(original: ImageDocument, edited: ImageDocument, filename: str
             resolution = (page.tags.valueof(282, (72, 1)), page.tags.valueof(283, (72, 1)))
             unit = int(page.tags.valueof(296, 2))
             levels = max(1, layout.pyramid_levels)
-            if options.keep_layers and 37724 in page.tags:
+            if options.keep_layers and 37724 in page.tags and edited.generated_layer_data is None:
                 layer_bytes = bytes(page.tags[37724].value)
                 if edited.metadata.get("layer_composite_applied"):
                     from .layers import LayerStack
@@ -257,6 +257,20 @@ def save_tiff_copy(original: ImageDocument, edited: ImageDocument, filename: str
                      for value in dpi]
         resolution = tuple((value.numerator, value.denominator)
                            for value in densities)
+    if options.keep_layers and edited.generated_layer_data is not None:
+        from .svglayer import validated_layer_data
+        from .layerediting import composite_samples, _protected_pixels
+        validated_layer_data(original, edited)
+        stack, state = edited.layer_stack, edited.layer_state
+        composed = composite_samples(edited, stack, state)
+        indices, expected = _protected_pixels(edited, composed)
+        if (len(indices) == edited.base_count and np.any(composed[..., -1] != edited.maximum)):
+            raise ValueError("The merged TIFF is missing transparency from the generated layers")
+        if any(not np.array_equal(edited.samples[..., index], expected[..., position])
+               for position, index in enumerate(indices)):
+            raise ValueError("The merged TIFF pixels do not match the generated Photoshop layers")
+        layer_bytes = stack.rewrite(state.order, state.visible)
+        extra_tags.append((37724, 7, len(layer_bytes), layer_bytes, False))
     if resources:
         extra_tags.append((34377, 1, len(resources), resources, False))
     if edited.color_mode == "CMYK":

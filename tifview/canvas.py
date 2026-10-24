@@ -138,19 +138,22 @@ def expand_document(original, doc, width, height, left=0, top=0, transparent=Tru
     result = replace(doc, samples=samples, channels=channels, metadata=metadata,
                      photoshop_resources=resources, canvas=geometry,
                      layer_stack=None, layer_state=None,
+                     generated_layer_data=None,
                      layer_merged_samples=None, layer_merged_transparency=None)
     metadata.pop("layer_composite_applied", None)
     metadata.pop("canvas_layer_reason", None)
-    if original.metadata.get("has_photoshop_layers"):
+    if original.metadata.get("has_photoshop_layers") or doc.generated_layer_data is not None:
         try:
             from .layers import LayerStack
             if not transparent:
                 raise ValueError("White canvas padding would require a new Photoshop background layer")
             if previous and not previous.layers_preserved:
                 raise ValueError(doc.metadata.get("canvas_layer_reason", "The earlier canvas change requires a merged copy"))
-            source_stack = original.layer_stack or LayerStack.from_document(original)
+            generated = doc.generated_layer_data is not None
+            source_stack = doc.layer_stack if generated else original.layer_stack or LayerStack.from_document(original)
             state = doc.layer_state or layerediting.default_state(source_stack)
-            data = layer_bytes(original, geometry, source_stack.data)
+            shift = replace(geometry, offset=(left, top)) if generated else geometry
+            data = layer_bytes(doc if generated else original, shift, source_stack.data)
             layerediting.require_unchanged_merged_pixels(original, doc, source_stack)
             # LayerStack uses this array only for shape/dtype, not source values.
             # A tiny broadcast view avoids holding full-image history snapshots.
@@ -164,6 +167,7 @@ def expand_document(original, doc, width, height, left=0, top=0, transparent=Tru
             geometry = replace(geometry, layers_preserved=True)
             metadata["layer_composite_applied"] = True
             result = replace(result, canvas=geometry, layer_stack=stack, layer_state=state,
+                             generated_layer_data=data if generated else None,
                              layer_merged_samples=samples,
                              layer_merged_transparency=next((c.index for c in channels if c.kind == "Transparency"), None))
         except ValueError as exc:

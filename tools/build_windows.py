@@ -126,7 +126,7 @@ def main():
         report.unlink()
     # Only these owned synthetic check outputs are cleared between builds.
     # Customer images and validation/local are never part of this cleanup.
-    for suffix in ("-edited.tif", "-layers.tif", "-aligned.svg", ".tifview.json", "-canvas.tif"):
+    for suffix in ("-edited.tif", "-layers.tif", "-aligned.svg", ".tifview.json", "-canvas.tif", "-svg-layer.tif"):
         report.with_name(report.stem + suffix).unlink(missing_ok=True)
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
     # No source checkout or Python command is involved in the frozen smoke test.

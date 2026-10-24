@@ -270,6 +270,33 @@ def run(image_path: str, report_path: str) -> int:
             window.edits.redo(); window.edits_changed(); drain_layers()
             np.testing.assert_array_equal(window.doc.samples, expanded_pixels)
             window.vectors_panel.mark_saved()
+            from tifview.canvasdialog import CanvasSizeDialog
+            size_dialog = CanvasSizeDialog(window.doc)
+            size_dialog.mode.setCurrentIndex(1)
+            size_dialog.fields["left"].setValue(12)
+            size_dialog.fields["bottom"].setValue(9)
+            assert size_dialog.canvas_geometry() == (window.doc.width + 12, window.doc.height + 9, 12, 0)
+            assert size_dialog.background.currentText() == "Transparent"
+            size_dialog.close()
+            window.vectors_panel.visible.setChecked(True)
+            before_svg_layer = window.doc.samples.copy()
+            window.perform_layer_change("add_svg_layer", artwork, window.vectors_panel.placement, "SVG test layer")
+            drain_layers()
+            assert window.vectors_panel.artwork is None
+            assert window.doc.layer_stack.layers[-1].name == "SVG test layer"
+            assert not np.array_equal(window.doc.samples, before_svg_layer)
+            svg_layer_path = report.with_name(report.stem + "-svg-layer.tif")
+            if svg_layer_path.exists():
+                raise FileExistsError(svg_layer_path)
+            save_tiff_copy(window.edits.original, window.doc, svg_layer_path)
+            svg_layer_doc = load_image(svg_layer_path)
+            np.testing.assert_array_equal(svg_layer_doc.samples, window.doc.samples)
+            assert LayerStack.from_document(svg_layer_doc).layers[0].name in ("SYNTHETIC original base", "SYNTHETIC overlay")
+            assert any(layer.name == "SVG test layer" for layer in LayerStack.from_document(svg_layer_doc).layers)
+            window.edits.undo(); window.edits_changed(); drain_layers()
+            np.testing.assert_array_equal(window.doc.samples, before_svg_layer)
+            window.edits.redo(); window.edits_changed(); drain_layers()
+            np.testing.assert_array_equal(window.doc.samples, svg_layer_doc.samples)
             # Synthetic 25%-75% rectangle and solid RGB-red descriptor, with
             # no cached raster pixels (no private/customer data in the bundle).
             shape = read_shape({
@@ -298,7 +325,7 @@ def run(image_path: str, report_path: str) -> int:
                                   "rebuilt image pyramid", "lazy Qt layer pixels", "layer visibility and order",
                                   "synchronized native layer composite and transparency", "saved compressed layer pixels",
                                   "mixed layer undo and redo", "frozen Qt SVG renderer and alignment undo/redo",
-                                  "physical SVG export and alignment job round trip", "absolute SVG shape and stroke units", "native solid vector shape without cached pixels", "transparent canvas growth, raster layers, copy save and exact undo", "untouched source"])
+                                  "physical SVG export and alignment job round trip", "absolute SVG shape and stroke units", "manual canvas edge controls", "SVG pixel layer save, readback and undo", "native solid vector shape without cached pixels", "transparent canvas growth, raster layers, copy save and exact undo", "untouched source"])
         except Exception as exc:
             result.update(passed=False, error=traceback.format_exc())
         if window.previewer is not None:

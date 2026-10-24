@@ -408,3 +408,28 @@ SVG hashes remain unchanged. Private copies, jobs, SVG exports, screenshots
 and a report stay under ignored validation/local/. Photoshop, PrintExp and
 cutter validation of these new files remains pending. The full local suite
 passes 651 checks including the private samples.
+
+
+## Explicit canvas growth and saved SVG layers (v0.7.0)
+
+New regressions exercise all nine anchors, independent edges, pixel/mm conversion,
+non-square DPI, the transparent default and rejection of smaller canvases. SVG
+pixel-layer checks span RGB/CMYK/Gray/WhiteIsZero, 8/16-bit samples, files with and
+without existing layers, associated/unassociated transparency, untouched spots,
+independent psdtags reads, Unicode names, preserved source records/chunks, native
+copy readback, mixed spot/canvas/layer undo, reorder/hide/reopen and failed-operation
+atomicity. The GUI save path verifies that the add/omit/cancel choice cannot
+silently drop an overlay. Frozen checks add a real SVG raster layer, save/reopen
+it and exercise its history alongside the canvas dialog.
+
+The supplied 4260 x 1663 grayscale 720-DPI sample was expanded with approximately
+2 mm left/right and 1 mm top/bottom (whole-pixel rounding), to 4374 x 1719. Its
+outline SVG was centred and rendered through the document ICC into a second
+raster layer. The TIFF keeps Layer 1 plus 3mm_plate_outline. Source compressed
+layer bytes are exact; hiding the new layer restores all original image pixels.
+Saved native samples, undo/redo and unchanged TIFF/SVG hashes pass. Layer creation
+took about 1.9 seconds locally. Copies and screenshots stay in ignored
+validation/local/svg-layers/. Photoshop/PrintExp validation of these new layered
+copies is pending.
+
+The complete local suite passes 688 tests, including the private samples.

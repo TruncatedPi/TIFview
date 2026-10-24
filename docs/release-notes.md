@@ -1,24 +1,27 @@
-Correct absolute SVG shape and stroke lengths when fitting a larger TIFF canvas.
+Add manual canvas sizing and saved SVG pixel layers.
 
-Download the [**TIFview 0.6.1 Windows x64 ZIP**](https://github.com/TruncatedPi/TIFview/releases/download/v0.6.1/TIFview-0.6.1-windows-x64.zip),
-extract the whole archive and run **TIFview/TIFview.exe**. Rerun `setup.cmd`
-from the source ZIP for automatic updating.
+Download the [**TIFview 0.7.0 Windows x64 ZIP**](https://github.com/TruncatedPi/TIFview/releases/download/v0.7.0/TIFview-0.7.0-windows-x64.zip),
+extract it and run **TIFview/TIFview.exe**, or rerun `setup.cmd` to update.
 
-SVG strokes or basic shape dimensions written in mm, cm, in, pt or pc now use
-correct SVG/CSS user units. Qt previously ignored these suffixes on geometry
-and strokes, which could make a preview and its fitted canvas too small for
-other SVG viewers. Normalizing these lengths before rendering and exporting
-keeps the viewBox, path coordinates, transforms and physical page size intact.
-Percentage and font-relative lengths are rejected explicitly instead of silently
-misinterpreted. Numeric and px lengths continue to work.
+**Canvas size** on the toolbar lets you enter width/height with a nine-position
+anchor or add independent amounts to the left, top, right and bottom. Use pixels
+or millimetres. Padding defaults to transparent; original pixels are not resampled.
+Undo/redo and saved copies retain the chosen size. Cropping is not implemented.
 
-Canvas enlargement still defaults to transparent padding and offers image
-centring. Original native pixels, print resolution, ICC and compatible raster
-layers are retained. Save the expanded TIFF copy before its alignment job;
-SVG remains separate from the TIFF pixels, and source files remain untouched.
+**Add SVG as layer** renders the imported artwork into a named Photoshop pixel
+layer at the TIFF resolution. It appears in Layers and supports visibility,
+ordering and undo/redo. Save TIFF copy retains this layer and a matching composite.
+Saving with a pending SVG offers to add it; omission is an explicit choice.
 
-The supplied grayscale TIFF/SVG pair passes exact native save/reopen, alpha
-padding, retained compressed layer bytes, undo/redo and alignment job checks.
-The displayed outline matches its exported SVG. Private validation files stay
-under ignored validation/local/. Photoshop, PrintExp and cutter checks of these
-new copies remain pending.
+Colours use the image's colour mode and ICC profile. Existing process pixels
+outside the artwork and every spot/saved-alpha plane are preserved. Compatible
+original layer records and compressed pixels remain intact. Layer creation needs
+orientation 1 and an accurately supported existing composite; unsupported stacks
+or independent process/transparency painting need a merged-copy round trip first.
+The SVG must fit the canvas. New layers are raster artwork, not vector smart objects.
+
+The supplied grayscale TIFF/SVG pair now saves with its original raster layer
+and a separate outline layer, plus explicit edge padding. Native saved pixels,
+original compressed layer channels, hidden-outline restoration, undo/redo and
+unchanged source hashes pass. New files still need Photoshop/PrintExp validation.
+Private files remain under ignored validation/local/.

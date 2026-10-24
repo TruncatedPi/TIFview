@@ -304,8 +304,9 @@ bounded placement history; the active tab selects SVG versus image undo/redo.
 The versioned JSON job embeds SVG plus placement and binds it to an image hash,
 dimensions and calibrated DPI. It stores no image edits. An atomic separate SVG
 export uses the image's physical page size. Original TIFF/SVG inputs are protected.
-TIFF output retains the existing channel/layer workflow and does not contain the
-imported SVG. Real vector-copy/cutter validation remains a separate milestone.
+Overlay-only imports are separate from TIFF pixels. Since v0.7.0, Add SVG as layer
+includes the artwork in TIFF output as a raster layer. Real cutter validation
+remains a separate milestone.
 
 References: [Adobe Photoshop formats](https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/),
 [Qt SVG rendering](https://doc.qt.io/qt-6.11/qsvgrenderer.html), and
@@ -355,3 +356,24 @@ before measuring bounds, rendering, embedding a job or exporting. The SVG 2
 page dimensions, path coordinates, transforms and opaque metadata are retained.
 Percentage, font-relative and expression lengths are explicitly unsupported.
 This keeps a fitted canvas large enough for the same stroke in other viewers.
+
+
+## Manual canvas and SVG pixel layers (v0.7.0)
+
+CanvasSizeDialog maps explicit dimensions/anchors or individual edge increments
+to the existing lossless expansion operation. Millimetres use each axis's print
+resolution; geometry is rounded to native pixels. Pending overlay coordinates
+follow the canvas origin through changes and undo.
+
+svglayer.py renders the bounded SVG using Qt at the document resolution, crops
+transparent excess, converts sRGB artwork through the destination ICC when present,
+and creates native 8/16-bit process/alpha channels. New raster records use RLE
+(or ZIP for rows too long for PSD RLE) and Unicode layer names. Source records,
+compressed chunks and unrelated top-level tags are spliced verbatim, not decoded
+through psdtags' opaque descriptor parser. The writer independently verifies
+retained original records/chunks, generated data and native composite agreement.
+No-layer sources gain a base raster layer. Generated stacks participate in the
+existing layer state, compressed native-delta history and subsequent expansion.
+History includes retained layer bytes when a stack changes. Saving a pending
+SVG is an explicit add/omit/cancel choice; conversion is performed by the layer
+worker before the normal copy-save workflow continues.
