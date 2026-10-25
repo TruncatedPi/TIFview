@@ -1,4 +1,4 @@
-TIFview 0.7.1 - printing image/channel/layer viewer, SVG alignment and pixel editor
+TIFview 0.8.0 - printing image/channel/layer viewer, SVG alignment and pixel editor
 
 Windows 10/11, 64-bit (x64).
 
@@ -26,6 +26,14 @@ Shade 0 paints black (normally ink on spots), 255 paints white for 8-bit images;
 Save uses LZW, interleaved samples, IBM-PC byte order, transparency and a pyramid.
 Spot/saved-mask edits can retain original Photoshop layers. Process/transparency
 edits require a merged copy without layers; review the save dialog.
+To draw while retaining compatible existing layers, open Layers, select a
+Box/Ellipse/Line/Text tool, choose Colour, draw, then name the new pixel layer.
+The viewer switches to the composite so the new drawing is visible immediately.
+Each drawing adds a layer with undo/redo, visibility and ordering controls.
+RGB drawing colours convert through the embedded ICC profile; failed conversion
+reports an error instead of saving unmanaged colour. Use Save TIFF copy with
+Retain Photoshop layers enabled. New drawn-layer copies need Photoshop/PrintExp
+validation; existing layer visibility/order validation does not cover them.
 The Layers tab shows individual saved layer pixels. Its checkboxes and Move
 up/down controls change visibility/order in a saved TIFF copy, retaining layer
 pixels and updating the native merged image. These changes support undo/redo.

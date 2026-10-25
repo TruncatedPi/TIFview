@@ -398,7 +398,7 @@ so writer byte comparisons remain exact. Canonical SVG size is checked before
 renderer construction, keeping imported artwork within the job reader's limit.
 
 
-## Pixel layer drawing
+## Pixel layer drawing (v0.8.0)
 
 `drawlayer.py` allows rasterizing shapes (boxes, ellipses, lines) and text
 directly into a new named Photoshop layer, eliminating the requirement to

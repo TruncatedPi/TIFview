@@ -450,7 +450,7 @@ The full local suite passes 704 tests including private samples. A further
 105 UI/vector regressions pass after the final fractional-coordinate dirty-state
 adjustment. The Windows executable retains version metadata and packaged checks.
 
-## Drawing onto new pixel layers
+## Drawing onto new pixel layers (v0.8.0)
 
 The complete local suite passes 773 tests, including private samples. New drawing
 coverage spans Box/Ellipse/Line/Text, 8/16-bit RGB/CMYK/Gray/WhiteIsZero, layered

@@ -1,27 +1,29 @@
-Fix canvas alignment, layer-save warnings and SVG/canvas history after review.
+Draw shapes and text onto new Photoshop pixel layers while retaining compatible
+existing layers.
 
-Download the [**TIFview 0.7.1 Windows x64 ZIP**](https://github.com/TruncatedPi/TIFview/releases/download/v0.7.1/TIFview-0.7.1-windows-x64.zip),
+Download the [**TIFview 0.8.0 Windows x64 ZIP**](https://github.com/TruncatedPi/TIFview/releases/download/v0.8.0/TIFview-0.8.0-windows-x64.zip),
 extract it and run **TIFview/TIFview.exe**, or rerun `setup.cmd` to update.
 
-- Centred SVG canvas expansion adds symmetric margins and moves the image and
-  SVG together. The dialog shows the actual centred size.
-- White canvas padding after creating layers on a flat image now explains that
-  a merged copy is required. Saving with layers requested fails explicitly;
-  undo restores the layered document. Later growth retains the warning.
-- In Vectors, undo/redo follows the order of placement and canvas edits. A new
-  edit clears obsolete redo entries in the other history too.
-- Saved alignment jobs become dirty when their bound image/canvas changes,
-  including right/bottom growth with no position shift. Saving only the TIFF
-  cannot mark an outdated job clean. Undo can restore its saved image binding.
-- Lazy layer loading backfills baseline canvas history; repeated undo/redo
-  retains the loaded inventory without replacing rebased layer stacks.
-- Known SVG layer-creation limits disable Add with an explanation, while Save
-  without SVG remains available.
-- Original raster reference points are rebased from the source in one step,
-  avoiding floating-point drift during repeated canvas growth after SVG import.
-- SVGs whose normalized XML exceeds the 2 MiB limit are rejected at import,
-  rather than creating alignment jobs that cannot reopen.
+- In Layers, choose Box, Ellipse, Line or Text, select a colour and draw. Name
+  the new layer; hide/show, reorder and undo/redo it using the existing controls.
+- New artwork appears immediately in the composite even when an individual
+  layer was selected before drawing.
+- RGB colours convert into the document's colour mode through its embedded ICC
+  profile. Conversion errors stop the operation with a clear message.
+- Native 8/16-bit RGB, CMYK and grayscale images are supported. Drawing uses
+  source-pixel coordinates and does not require calibrated print DPI.
+- Save TIFF copy retains compatible original layer records and compressed
+  pixels alongside the drawn layers, with a matching merged image. Spot and
+  saved-selection channel samples remain separate and unchanged by drawing.
+- Files without Photoshop layers gain an Original image base layer. Existing
+  orientation, supported-composite and layer-preservation restrictions apply.
+- Channels-tab painting remains available for editing individual process,
+  white-ink, varnish and saved-mask samples.
 
-Regression coverage uses synthetic artwork only. Original layer-record byte
-verification, native channel readback and explicit merged-copy checks remain
-active. The new SVG pixel-layer output still needs Photoshop/PrintExp validation.
+Validation: 773 local tests pass, including the existing private samples.
+The packaged check adds a drawing after SVG import and canvas growth, verifies
+visible pixels and unchanged spot/selection planes, saves/reopens the layered
+TIFF and checks undo/redo. The local executable passes all 28 packaged checks.
+
+New drawing-workflow TIFF copies still need Photoshop/PrintExp validation.
+The source image stays untouched; private validation files remain ignored.
