@@ -433,3 +433,19 @@ validation/local/svg-layers/. Photoshop/PrintExp validation of these new layered
 copies is pending.
 
 The complete local suite passes 688 tests, including the private samples.
+
+## Review regressions (v0.7.1)
+
+Sixteen synthetic regressions cover centred overhang on each edge, unchanged
+source pixels and SVG/image alignment through undo/redo; generated layers plus
+white and subsequent transparent padding, explicit merged export and undo;
+chronological mixed SVG/canvas history with cross-history redo invalidation;
+saved-job image binding with and without left/top offsets and TIFF-only saving;
+lazy baseline inventory across preserved/unsupported canvas undo; known SVG
+preflight limits, saved copies without out-of-canvas overlays; fractional fxrp
+coordinates across multiple growth operations and byte-verified saving; and
+normalization growth beyond the SVG byte limit.
+
+The full local suite passes 704 tests including private samples. A further
+105 UI/vector regressions pass after the final fractional-coordinate dirty-state
+adjustment. The Windows executable retains version metadata and packaged checks.

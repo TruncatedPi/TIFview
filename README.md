@@ -1,4 +1,4 @@
-# TIFview 0.7.0
+# TIFview 0.7.1
 
 [![Windows checks](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml/badge.svg)](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml)
 
@@ -36,7 +36,7 @@ the other spots; click **Composite** to return to the colour image.
 **Windows 10/11, 64-bit (x64). Python is included in the portable download.**
 
 1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
-2. Download [**TIFview-0.7.0-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.7.0/TIFview-0.7.0-windows-x64.zip) and extract the entire ZIP.
+2. Download [**TIFview-0.7.1-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.7.1/TIFview-0.7.1-windows-x64.zip) and extract the entire ZIP.
 3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
 
 Keep the `_internal` folder with the executable. No Python installation, Git,
@@ -191,8 +191,8 @@ inline fill/stroke styles. The overlay remains a vector at every zoom.
 - Set width/height in millimetres; **Keep SVG proportions** starts enabled.
 - Rotation is clockwise about the SVG viewport's top-left corner.
 - **Show SVG overlay** is a viewing control. Hide it to inspect image channels.
-- **Ctrl+Z/Ctrl+Y** in the Vectors tab undo/redo alignment, then an immediately
-  preceding canvas change; in Channels/Layers
+- **Ctrl+Z/Ctrl+Y** in the Vectors tab undo/redo alignment and canvas changes
+  in the order they were made; in Channels/Layers
   they continue to undo/redo image edits.
 - **Save alignment job** writes a separate `.tifview.json` with the SVG and its
   placement, bound to the associated image's checksum, dimensions and DPI.
@@ -206,6 +206,8 @@ import dialog offers **Expand and import**, **Keep canvas**, or **Cancel**.
 **Transparent** is the default new-area background; **White** is also available.
 Keep the image position, or centre it in the expanded canvas. Size and placement
 use whole image pixels without resampling either the original image or SVG.
+Centre adds symmetric margins and moves the image and SVG together, preserving
+their alignment even when the overhang is entirely on one side.
 Negative SVG extents receive left/top padding so the complete cut path fits.
 **Expand canvas to SVG** in the Vectors tab repeats this after alignment changes.
 
@@ -245,6 +247,8 @@ tab, where it can be viewed alone, hidden, shown or reordered. Undo/redo include
 layer creation. Then **Save TIFF copy** with **Retain Photoshop layers** enabled.
 If an SVG overlay is still pending when saving, the app offers to add it as a
 layer; saving without the SVG is an explicit alternative.
+When a known limitation prevents layer creation, the add control explains it
+and the save dialog still offers saving without the overlay.
 
 New artwork uses the document's colour mode and embedded ICC profile. A grayscale
 TIFF produces a grayscale layer; CMYK produces process-colour pixels. Original
@@ -260,6 +264,8 @@ For an overlay-only alignment job, save the TIFF copy first, then the alignment
 job. Jobs preserve the original SVG geometry for later vector export, but do not
 store unsaved channel/layer edits. Export/save that job before converting the SVG
 to a pixel layer if you want to retain the vector alignment too.
+Canvas or image edits mark an existing alignment job as unsaved until you save
+the updated TIFF and its job. Saving the TIFF alone does not update the job.
 
 ### Set canvas dimensions or grow selected edges
 

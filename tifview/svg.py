@@ -279,6 +279,8 @@ class SvgArtwork:
         _normalize_lengths(root)
         root.set("viewBox", " ".join(format(v, ".15g") for v in view_box))
         raw = ET.tostring(root, encoding="utf-8")
+        if len(raw) > MAX_SVG_BYTES:
+            raise ValueError("Normalized SVG exceeds the 2 MiB limit. Simplify the artwork before importing.")
         renderer = QSvgRenderer(QByteArray(raw))
         renderer.setAnimationEnabled(False)
         if not renderer.isValid():

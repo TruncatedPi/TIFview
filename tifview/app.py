@@ -28,6 +28,7 @@ from .layers import LayerStack
 from .svg import Placement, SvgArtwork, SvgItem, export_svg, job_data, load_job, canvas_fit
 from .vectorpanel import VectorsPanel
 from .canvasdialog import CanvasSizeDialog
+from .svglayer import svg_layer_reason
 from .writer import SaveOptions, layer_preservation_reason, save_tiff_copy
 
 
@@ -351,16 +352,12 @@ class SpotDialog(QDialog):
 class CanvasFitDialog(QDialog):
     def __init__(self, doc, size, parent=None):
         super().__init__(parent)
+        self.doc, self._fit_size = doc, size
         self.setWindowTitle("SVG needs a larger canvas")
         layout = QVBoxLayout(self)
-        width, height, left, top = size
-        dx, dy = doc.metadata["dpi"]
-        label = QLabel(f"Image: {doc.width:,} × {doc.height:,} pixels\n"
-                       f"Required canvas: {width:,} × {height:,} pixels\n"
-                       f"{width * 25.4 / dx:.3f} × {height * 25.4 / dy:.3f} mm\n\n"
-                       "Pixels and SVG stay at their original scale. Canvas expansion is undoable and saved with Save TIFF copy.")
-        label.setWordWrap(True)
-        layout.addWidget(label)
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
         self.background = QComboBox()
         self.background.addItems(["Transparent", "White"])
         layout.addWidget(QLabel("New canvas area"))
@@ -369,6 +366,8 @@ class CanvasFitDialog(QDialog):
         self.anchor.addItems(["Keep image position", "Centre image in expanded canvas"])
         layout.addWidget(QLabel("Image placement"))
         layout.addWidget(self.anchor)
+        self.anchor.currentIndexChanged.connect(self.update_summary)
+        self.update_summary()
         notice = QLabel("Spot padding contains no ink. Compatible raster layers are retained; vector or other dependent layers may require a merged copy. The TIFF save dialog explains any layer limitation.")
         notice.setWordWrap(True)
         layout.addWidget(notice)
@@ -379,9 +378,25 @@ class CanvasFitDialog(QDialog):
         layout.addWidget(buttons)
         self.resize(550, 350)
 
+    def canvas_geometry(self):
+        width, height, left, top = self._fit_size
+        if self.anchor.currentIndex() == 1:
+            left = max(left, width - self.doc.width - left)
+            top = max(top, height - self.doc.height - top)
+            width, height = self.doc.width + 2 * left, self.doc.height + 2 * top
+        return width, height, left, top
+
+    def update_summary(self, *_):
+        width, height, _, _ = self.canvas_geometry()
+        dx, dy = self.doc.metadata["dpi"]
+        self.summary.setText(f"Image: {self.doc.width:,} × {self.doc.height:,} pixels\n"
+                             f"Required canvas: {width:,} × {height:,} pixels\n"
+                             f"{width * 25.4 / dx:.3f} × {height * 25.4 / dy:.3f} mm\n\n"
+                             "Pixels and SVG keep their scale and alignment. Canvas expansion is undoable and saved with Save TIFF copy.")
+
 
 class SvgSaveDialog(QDialog):
-    def __init__(self, doc, parent=None):
+    def __init__(self, doc, parent=None, reason=None):
         super().__init__(parent)
         self.setWindowTitle("Include imported SVG")
         layout = QVBoxLayout(self)
@@ -390,11 +405,16 @@ class SvgSaveDialog(QDialog):
                        "The layer uses the image's print resolution and supports hide/show and reordering.")
         label.setWordWrap(True)
         layout.addWidget(label)
+        if reason:
+            explanation = QLabel("Cannot add this SVG as a layer: " + reason)
+            explanation.setWordWrap(True)
+            layout.addWidget(explanation)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         buttons.rejected.connect(self.reject)
         add = buttons.addButton("Add SVG as layer and continue", QDialogButtonBox.ButtonRole.AcceptRole)
         add.clicked.connect(self.accept)
-        add.setDefault(True)
+        add.setEnabled(reason is None)
+        add.setDefault(reason is None)
         buttons.addButton("Save without SVG", QDialogButtonBox.ButtonRole.ActionRole).clicked.connect(lambda: self.done(2))
         layout.addWidget(buttons)
         self.resize(580, 180)
@@ -414,7 +434,8 @@ class TiffSaveDialog(QDialog):
         self.pyramid.setChecked(True)
         layout.addWidget(self.pyramid)
         self.layers = QCheckBox("Retain Photoshop layers")
-        has_layers = bool(original.metadata.get("has_photoshop_layers") or edited.generated_layer_data is not None)
+        has_layers = bool(original.metadata.get("has_photoshop_layers") or edited.metadata.get("has_photoshop_layers")
+                          or edited.generated_layer_data is not None)
         reason = layer_preservation_reason(original, edited)
         self.layers.setChecked(has_layers and reason is None)
         self.layers.setEnabled(has_layers and reason is None)
@@ -628,6 +649,7 @@ class ViewerWindow(QMainWindow):
         self.vectors_panel.save_requested.connect(self.choose_save_job)
         self.vectors_panel.export_requested.connect(self.choose_export_svg)
         self.vectors_panel.placement_changed.connect(self.svg_placement_changed)
+        self.vectors_panel.placement_edited.connect(self.vector_edit_made)
         self.vectors_panel.remove_requested.connect(self.remove_svg)
         self.vectors_panel.expand_requested.connect(self.fit_svg_canvas)
         self.vectors_panel.layer_requested.connect(self.choose_svg_layer)
@@ -707,6 +729,8 @@ class ViewerWindow(QMainWindow):
         self.vectors_panel.set_artwork()
         self.doc = doc
         self.edits = EditSession(doc)
+        self._last_edit_sequence = 0
+        self.vectors_panel.bind_image(self.edits.state)
         self.tabs.blockSignals(True)
         self.tabs.setCurrentIndex(0)
         self.tabs.blockSignals(False)
@@ -804,16 +828,13 @@ class ViewerWindow(QMainWindow):
         if response == 2:
             self.install_svg(artwork, placement)
         elif response == QDialog.DialogCode.Accepted:
-            width, height, origin_left, origin_top = size
-            left, top = origin_left, origin_top
-            if dialog.anchor.currentIndex() == 1:
-                left, top = (width - self.doc.width) // 2, (height - self.doc.height) // 2
+            width, height, left, top = dialog.canvas_geometry()
             dx, dy = self.doc.metadata["dpi"]
-            shifted = replace(placement, x_mm=placement.x_mm + origin_left * 25.4 / dx,
-                              y_mm=placement.y_mm + origin_top * 25.4 / dy)
+            shifted = replace(placement, x_mm=placement.x_mm + left * 25.4 / dx,
+                              y_mm=placement.y_mm + top * 25.4 / dy)
             self._canvas_overlay = artwork, shifted
             self.perform_layer_change("expand_canvas", width, height, left, top,
-                                      dialog.background.currentIndex() == 0, origin_left, origin_top)
+                                      dialog.background.currentIndex() == 0)
         dialog.deleteLater()
 
     def choose_canvas_size(self):
@@ -835,6 +856,10 @@ class ViewerWindow(QMainWindow):
             self.setWindowModified(bool(self.edits and self.edits.dirty) or self.vectors_panel.dirty)
             self.set_controls()
 
+    def vector_edit_made(self):
+        if self.edits:
+            self.edits.discard_redo()
+
     def remove_svg(self):
         self.view.set_svg()
         self.vectors_panel.set_artwork()
@@ -844,6 +869,10 @@ class ViewerWindow(QMainWindow):
     def choose_svg_layer(self):
         panel = self.vectors_panel
         if not self.doc or panel.artwork is None or self.loader or self.saver or self.layer_busy():
+            return
+        reason = svg_layer_reason(self.doc, panel.artwork, panel.placement)
+        if reason:
+            QMessageBox.warning(self, "Cannot add SVG layer", reason)
             return
         name, accepted = QInputDialog.getText(self, "Add SVG as pixel layer",
             f"Layer name\nRendered at the TIFF resolution in {self.doc.color_mode} colour mode.",
@@ -1192,10 +1221,14 @@ class ViewerWindow(QMainWindow):
 
     def edits_changed(self, selected_id=None):
         self._last_tiff_copy = None
+        if self.edits._sequence != self._last_edit_sequence:
+            self.vectors_panel.discard_redo()
+            self._last_edit_sequence = self.edits._sequence
         selected_id = self.selected_channel_id() if selected_id is None else selected_id
         self.remember_channel_preferences()
         old_origin = self.doc.canvas.origin_offset if self.doc.canvas else (0, 0)
         self.doc = self.edits.document
+        self.vectors_panel.bind_image(self.edits.state)
         new_origin = self.doc.canvas.origin_offset if self.doc.canvas else (0, 0)
         if self.vectors_panel.artwork is not None:
             dx, dy = self.doc.metadata["dpi"]
@@ -1234,29 +1267,37 @@ class ViewerWindow(QMainWindow):
             self.channels.topLevelItem(channel.index + 1).setIcon(0, QIcon(QPixmap.fromImage(image).scaled(
                 40, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)))
 
-    def undo(self):
-        if self.tabs.currentWidget() is self.vectors_panel:
-            if self.vectors_panel.can_undo:
-                if self.saver is None and self.loader is None and not self.layer_busy():
-                    self.vectors_panel.undo()
-                return
-            if not (self.edits and self.edits.can_undo and isinstance(self.edits.history[self.edits.cursor - 1], CanvasPatch)):
-                return
-        if self.edits and self.saver is None and self.loader is None and self.previewer is None and not self.layer_busy():
-            self.edits.undo()
+    def history_target(self, forward=False):
+        if self.tabs.currentWidget() is not self.vectors_panel:
+            return self.edits
+        candidates = []
+        order = self.vectors_panel.history_order(forward)
+        if order is not None:
+            candidates.append((order, self.vectors_panel))
+        edits = self.edits
+        if edits and (edits.can_redo if forward else edits.can_undo):
+            patch = edits.history[edits.cursor if forward else edits.cursor - 1]
+            if isinstance(patch, CanvasPatch):
+                candidates.append((patch.order, edits))
+        if candidates:
+            return (min if forward else max)(candidates, key=lambda pair: pair[0])[1]
+        return None
+
+    def move_history(self, forward=False):
+        history = self.history_target(forward)
+        if history is None or self.loader or self.saver or self.layer_busy():
+            return
+        if history is self.edits and self.previewer:
+            return
+        (history.redo if forward else history.undo)()
+        if history is self.edits:
             self.edits_changed()
 
+    def undo(self):
+        self.move_history()
+
     def redo(self):
-        if self.tabs.currentWidget() is self.vectors_panel:
-            if self.vectors_panel.can_redo:
-                if self.saver is None and self.loader is None and not self.layer_busy():
-                    self.vectors_panel.redo()
-                return
-            if not (self.edits and self.edits.can_redo and isinstance(self.edits.history[self.edits.cursor], CanvasPatch)):
-                return
-        if self.edits and self.saver is None and self.loader is None and self.previewer is None and not self.layer_busy():
-            self.edits.redo()
-            self.edits_changed()
+        self.move_history(True)
 
     def confirm_discard(self):
         if not (self.edits and self.edits.dirty) and not self.vectors_panel.dirty:
@@ -1270,12 +1311,16 @@ class ViewerWindow(QMainWindow):
         if self.edits is None or self.saver is not None or self.loader is not None or self.previewer is not None or self.layer_busy():
             return
         if self.vectors_panel.artwork is not None:
-            choice = SvgSaveDialog(self.doc, self)
+            panel = self.vectors_panel
+            reason = svg_layer_reason(self.doc, panel.artwork, panel.placement)
+            choice = SvgSaveDialog(self.doc, self, reason=reason)
             response = choice.exec()
             choice.deleteLater()
             if response == QDialog.DialogCode.Rejected:
                 return
             if response == QDialog.DialogCode.Accepted:
+                if reason:
+                    return
                 panel = self.vectors_panel
                 self._save_after_svg = True
                 self.perform_layer_change("add_svg_layer", panel.artwork, panel.placement, Path(panel.artwork.name).stem)
@@ -1339,7 +1384,12 @@ class ViewerWindow(QMainWindow):
         vector_present = vector_enabled and self.vectors_panel.artwork is not None
         self.save_job_action.setEnabled(vector_present)
         self.export_svg_action.setEnabled(vector_present)
-        self.svg_layer_action.setEnabled(vector_present)
+        reason = (svg_layer_reason(self.doc, self.vectors_panel.artwork, self.vectors_panel.placement)
+                  if vector_present else None)
+        self.svg_layer_action.setEnabled(vector_present and reason is None)
+        self.vectors_panel.layer_button.setEnabled(vector_present and reason is None)
+        for control in (self.svg_layer_action, self.vectors_panel.layer_button):
+            control.setToolTip(reason or "Render the SVG into a new Photoshop pixel layer")
         editable = self.doc is not None and self.doc.bits in (8, 16) and self.doc.color_mode != "Palette"
         self.canvas_size_action.setEnabled(editable and not busy)
         spot_editable = editable and not busy and not rendering and not self.layer_mode()
@@ -1354,15 +1404,10 @@ class ViewerWindow(QMainWindow):
         self.move_spot_down_action.setEnabled(spot_editable and spot is not None and sequence < spot_count)
         self.open_action.setEnabled(not busy and not rendering)
         self.save_action.setEnabled(editable and not busy and not rendering)
-        history = self.vectors_panel if self.tabs.currentWidget() is self.vectors_panel else self.edits
-        history_enabled = not busy and (not rendering or history is self.vectors_panel)
-        self.undo_action.setEnabled(bool(history and history.can_undo and history_enabled))
-        self.redo_action.setEnabled(bool(history and history.can_redo and history_enabled))
-        if history is self.vectors_panel and self.edits and not busy and not rendering:
-            if not history.can_undo and self.edits.can_undo and isinstance(self.edits.history[self.edits.cursor - 1], CanvasPatch):
-                self.undo_action.setEnabled(True)
-            if not history.can_redo and self.edits.can_redo and isinstance(self.edits.history[self.edits.cursor], CanvasPatch):
-                self.redo_action.setEnabled(True)
+        for forward, action in ((False, self.undo_action), (True, self.redo_action)):
+            history = self.history_target(forward)
+            available = history and (history.can_redo if forward else history.can_undo)
+            action.setEnabled(bool(available and not busy and (not rendering or history is self.vectors_panel)))
         self.edit_toolbar.setEnabled(editable and selected is not None and not busy and not rendering and self.tabs.currentIndex() == 0)
         self.channels.setEnabled(self.loader is None)
         self.view.drawing_enabled = editable and selected is not None and not busy and not rendering and self.tabs.currentIndex() == 0

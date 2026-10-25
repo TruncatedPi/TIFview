@@ -1,4 +1,4 @@
-TIFview 0.7.0 - printing image/channel/layer viewer, SVG alignment and pixel editor
+TIFview 0.7.1 - printing image/channel/layer viewer, SVG alignment and pixel editor
 
 Windows 10/11, 64-bit (x64).
 
@@ -40,7 +40,8 @@ Photoshop/PrintExp validation is pending; complex vectors/masks remain limited.
 
 Vectors > Import SVG: overlay one self-contained SVG at its physical size.
 Use the Vectors tab to position/size in mm, rotate, or show/hide the overlay.
-Ctrl+Z/Y in that tab undo/redo alignment. Text must be converted to paths;
+Ctrl+Z/Y in that tab undo/redo alignment and canvas changes in operation order.
+Text must be converted to paths;
 images, effects, clipping, clones and stylesheets are unsupported.
 Save alignment job keeps SVG/placement in a separate .tifview.json. Open the
 associated TIFF first, then Open alignment job. Export aligned SVG keeps vectors
@@ -48,6 +49,8 @@ on a page matching the TIFF's print size.
 Add SVG as layer creates a named Photoshop pixel layer at the TIFF resolution.
 Hide/show and reorder it in Layers, then Save TIFF copy with layers retained.
 Saving with a pending overlay offers to add it instead of silently omitting it.
+Known layer-creation limits disable Add with an explanation; Save without SVG
+remains available. White padding that requires flattening is shown explicitly.
 Grayscale documents create gray layers; CMYK/RGB use the document colour mode
 and ICC profile. The original spot masks remain unchanged. Unsupported layer
 composites require saving/reopening a merged copy before adding artwork.

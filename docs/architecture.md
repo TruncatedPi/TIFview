@@ -377,3 +377,22 @@ existing layer state, compressed native-delta history and subsequent expansion.
 History includes retained layer bytes when a stack changes. Saving a pending
 SVG is an explicit add/omit/cancel choice; conversion is performed by the layer
 worker before the normal copy-save workflow continues.
+
+## Canvas/SVG review corrections (v0.7.1)
+
+Centred fitting derives symmetric margins from the full SVG/image bounds and
+uses the same origin translation for both. Placement history and CanvasPatch
+carry a shared monotonic operation order; the Vectors tab merges their next
+undo/redo candidates. New edits discard redo branches across both histories.
+
+Alignment-job dirtiness compares placement and the EditSession state bound at
+save. The saved placement stays in the saved canvas coordinates; only current
+placement history translates during canvas growth. Baseline lazy layer loading
+fills compatible CanvasPatch layouts without touching rebased stacks. Generated
+layer loss retains its canvas-preservation reason even for originally flat files.
+
+Known SVG layer limits are checked cheaply before offering Add; full native
+composite verification still runs in the worker. Original raster fxrp coordinates
+use the cumulative source offset even when generated layers move incrementally,
+so writer byte comparisons remain exact. Canonical SVG size is checked before
+renderer construction, keeping imported artwork within the job reader's limit.

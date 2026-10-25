@@ -1,10 +1,12 @@
 """One SVG cut/artwork overlay, calibrated to the displayed image in mm."""
 from dataclasses import replace
+import math
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout,
                                QLabel, QPushButton, QVBoxLayout, QWidget)
 
 from .svg import Placement
+from .history import next_order
 
 
 class VectorsPanel(QWidget):
@@ -13,6 +15,7 @@ class VectorsPanel(QWidget):
     save_requested = Signal()
     export_requested = Signal()
     placement_changed = Signal(object)
+    placement_edited = Signal()
     remove_requested = Signal()
     expand_requested = Signal()
     layer_requested = Signal()
@@ -26,6 +29,8 @@ class VectorsPanel(QWidget):
         self._history = []
         self._history_position = -1
         self._saved = None
+        self._image_binding = self._saved_binding = None
+        self._orders = []
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 6, 0, 0)
         self.name = QLabel("No SVG loaded")
@@ -95,13 +100,20 @@ class VectorsPanel(QWidget):
     def set_artwork(self, artwork=None, placement=None, dirty=False):
         self.artwork = artwork
         self._history = [placement] if placement is not None else []
+        self._orders = [0] if placement is not None else []
         self._history_position = 0 if placement is not None else -1
         self._saved = None if dirty else placement
+        self._saved_binding = self._image_binding
         self._display(placement)
 
     def _display(self, placement):
         self._updating = True
-        self.placement, self.dirty = placement, placement != self._saved
+        self.placement = placement
+        matches_saved = (placement is not None and self._saved is not None
+                         and placement.visible == self._saved.visible
+                         and all(math.isclose(getattr(placement, key), getattr(self._saved, key),
+                                              rel_tol=0, abs_tol=1e-9) for key in self.fields))
+        self.dirty = placement is not None and (not matches_saved or self._image_binding != self._saved_binding)
         self.name.setText(self.artwork.name if self.artwork is not None else "No SVG loaded")
         self.visible.setChecked(placement.visible if placement is not None else False)
         if placement is not None:
@@ -115,9 +127,21 @@ class VectorsPanel(QWidget):
         def moved(placement):
             return replace(placement, x_mm=placement.x_mm + x_mm, y_mm=placement.y_mm + y_mm)
         self._history = [moved(p) for p in self._history]
-        if self._saved is not None:
-            self._saved = moved(self._saved)
         self._display(moved(self.placement))
+
+    def bind_image(self, state):
+        """A saved job binds image pixels/size as well as placement coordinates."""
+        self._image_binding = state
+        self._display(self.placement)
+
+    def discard_redo(self):
+        del self._history[self._history_position + 1:]
+        del self._orders[self._history_position + 1:]
+
+    def history_order(self, forward=False):
+        if (self.can_redo if forward else self.can_undo):
+            return self._orders[self._history_position + (1 if forward else 0)]
+        return None
 
     @property
     def can_undo(self):
@@ -141,6 +165,7 @@ class VectorsPanel(QWidget):
 
     def mark_saved(self):
         self._saved = self.placement
+        self._saved_binding = self._image_binding
         self.dirty = False
 
     def change(self, changed=None):
@@ -162,10 +187,13 @@ class VectorsPanel(QWidget):
             return
         if placement == self.placement:
             return
-        self._history = self._history[:self._history_position + 1]
+        self.discard_redo()
         self._history.append(placement)
+        self._orders.append(next_order())
         # Alignment records contain five numbers and a boolean, not pixels.
         self._history = self._history[-256:]
+        self._orders = self._orders[-256:]
         self._history_position = len(self._history) - 1
         self._display(placement)
+        self.placement_edited.emit()
         self.placement_changed.emit(placement)

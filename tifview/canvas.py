@@ -62,9 +62,28 @@ def pad_samples(doc, width, height, left, top, channels, transparent):
     return np.ascontiguousarray(orient(samples, inverse))
 
 
-def layer_bytes(original, geometry, data):
+def _reference_points(stack, layer):
+    from .layers import _Cursor, _tags
+    extra_start = layer._record_start + 34 + 6 * len(layer.channel_ids)
+    cursor = _Cursor(memoryview(stack.data)[extra_start:layer._record_end], stack.byteorder, extra_start)
+    cursor.take(cursor.unpack("I")[0])
+    cursor.take(cursor.unpack("I")[0])
+    length = cursor.unpack("B")[0]
+    cursor.take(length)
+    cursor.take((-(length + 1)) % 4)
+    for tag in _tags(cursor, 2):
+        if tag.key == b"fxrp":
+            if tag.payload_end - tag.payload_start != 16:
+                raise ValueError("Unsupported raster transform reference point")
+            point = struct.unpack_from(stack.byteorder + "2d", stack.data, tag.payload_start)
+            if not all(math.isfinite(value) for value in point):
+                raise ValueError("Invalid raster transform reference point")
+            yield tag.payload_start, point
+
+
+def layer_bytes(original, geometry, data, reference=None):
     """Move understood raster rectangles only; compressed pixels stay exact."""
-    from .layers import LayerStack, _Cursor, _tags
+    from .layers import LayerStack
     if original.orientation != 1:
         raise ValueError("Preserving layers during canvas expansion requires TIFF orientation 1")
     stack = LayerStack(data, original)
@@ -77,26 +96,23 @@ def layer_bytes(original, geometry, data):
     if not left and not top:
         return data
     changed = bytearray(data)
-    for layer in stack.layers:
+    for index, layer in enumerate(stack.layers):
         y0, x0, y1, x1 = layer.bounds
         struct.pack_into(stack.byteorder + "4i", changed, layer._record_start,
                          y0 + top, x0 + left, y1 + top, x1 + left)
         # A raster layer's transform reference point is an absolute x/y pair.
-        extra_start = layer._record_start + 34 + 6 * len(layer.channel_ids)
-        cursor = _Cursor(memoryview(data)[extra_start:layer._record_end], stack.byteorder, extra_start)
-        cursor.take(cursor.unpack("I")[0])
-        cursor.take(cursor.unpack("I")[0])
-        length = cursor.unpack("B")[0]
-        cursor.take(length)
-        cursor.take((-(length + 1)) % 4)
-        for tag in _tags(cursor, 2):
-            if tag.key == b"fxrp":
-                if tag.payload_end - tag.payload_start != 16:
-                    raise ValueError("Unsupported raster transform reference point")
-                x, y = struct.unpack_from(stack.byteorder + "2d", data, tag.payload_start)
-                if not math.isfinite(x) or not math.isfinite(y):
-                    raise ValueError("Invalid raster transform reference point")
-                struct.pack_into(stack.byteorder + "2d", changed, tag.payload_start, x + left, y + top)
+        points = list(_reference_points(stack, layer))
+        shift_x, shift_y = left, top
+        if reference is not None and index < len(reference[0].layers):
+            baseline, (shift_x, shift_y) = reference
+            original_points = list(_reference_points(baseline, baseline.layers[index]))
+            if len(points) != len(original_points):
+                raise ValueError("Original raster transform reference points changed")
+            # Rebase original float coordinates in one step. Repeated additions
+            # can round differently from the writer's cumulative verification.
+            points = [(position, point) for (position, _), (_, point) in zip(points, original_points)]
+        for position, (x, y) in points:
+            struct.pack_into(stack.byteorder + "2d", changed, position, x + shift_x, y + shift_y)
     return bytes(changed)
 
 
@@ -142,7 +158,7 @@ def expand_document(original, doc, width, height, left=0, top=0, transparent=Tru
                      layer_merged_samples=None, layer_merged_transparency=None)
     metadata.pop("layer_composite_applied", None)
     metadata.pop("canvas_layer_reason", None)
-    if original.metadata.get("has_photoshop_layers") or doc.generated_layer_data is not None:
+    if original.metadata.get("has_photoshop_layers") or doc.metadata.get("has_photoshop_layers") or doc.generated_layer_data is not None:
         try:
             from .layers import LayerStack
             if not transparent:
@@ -153,7 +169,11 @@ def expand_document(original, doc, width, height, left=0, top=0, transparent=Tru
             source_stack = doc.layer_stack if generated else original.layer_stack or LayerStack.from_document(original)
             state = doc.layer_state or layerediting.default_state(source_stack)
             shift = replace(geometry, offset=(left, top)) if generated else geometry
-            data = layer_bytes(doc if generated else original, shift, source_stack.data)
+            reference = None
+            if generated and original.metadata.get("has_photoshop_layers"):
+                baseline = original.layer_stack or LayerStack.from_document(original)
+                reference = baseline, geometry.offset
+            data = layer_bytes(doc if generated else original, shift, source_stack.data, reference=reference)
             layerediting.require_unchanged_merged_pixels(original, doc, source_stack)
             # LayerStack uses this array only for shape/dtype, not source values.
             # A tiny broadcast view avoids holding full-image history snapshots.

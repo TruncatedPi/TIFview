@@ -98,7 +98,8 @@ def _validate_channel_layout(original: ImageDocument, edited: ImageDocument):
 
 
 def layer_preservation_reason(original: ImageDocument, edited: ImageDocument) -> str | None:
-    if not original.metadata.get("has_photoshop_layers") and edited.generated_layer_data is None:
+    if not (original.metadata.get("has_photoshop_layers") or edited.metadata.get("has_photoshop_layers")
+            or edited.generated_layer_data is not None):
         return None
     if original.metadata.get("has_photoshop_layers") and original.metadata.get("byte_order") != "IBM PC (little endian)":
         return "Preserving Macintosh-byte-order layer blocks in an IBM-PC TIFF is not implemented."

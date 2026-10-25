@@ -122,14 +122,26 @@ def base_stack(doc):
     return LayerStack(data, small_parent(doc))
 
 
+def svg_layer_reason(doc, artwork, placement):
+    """Cheap preflight shared by the controls and the pixel-layer worker."""
+    if doc.bits not in (8, 16) or doc.color_mode not in ("RGB", "CMYK", "Gray", "WhiteIsZero"):
+        return "Adding SVG layers supports unsigned 8/16-bit RGB, CMYK and grayscale images"
+    if doc.orientation != 1:
+        return "Adding SVG layers currently requires TIFF orientation 1"
+    if not doc.metadata.get("dpi"):
+        return "Adding an SVG layer needs calibrated print resolution"
+    if doc.metadata.get("canvas_layer_reason"):
+        return doc.metadata["canvas_layer_reason"] + ". Save and reopen a merged copy before adding a new layer."
+    if canvas_fit(doc, artwork, placement) != (doc.width, doc.height, 0, 0):
+        return "The SVG extends outside the canvas. Use Canvas size or Expand canvas to SVG before adding the layer."
+    return None
+
+
 def add_svg_layer(original, doc, artwork, placement, name):
     spots._validate(doc)
-    if doc.orientation != 1:
-        raise ValueError("Adding SVG layers currently requires TIFF orientation 1")
-    if not doc.metadata.get("dpi"):
-        raise ValueError("Adding an SVG layer needs calibrated print resolution")
-    if doc.metadata.get("canvas_layer_reason"):
-        raise ValueError(doc.metadata["canvas_layer_reason"] + ". Save and reopen a merged copy before adding a new layer.")
+    reason = svg_layer_reason(doc, artwork, placement)
+    if reason:
+        raise ValueError(reason)
     stack = doc.layer_stack
     if stack is None:
         stack = LayerStack.from_document(original) if original.metadata.get("has_photoshop_layers") else base_stack(doc)

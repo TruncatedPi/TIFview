@@ -1,7 +1,7 @@
 """Raster edits in source-pixel coordinates; original samples stay immutable."""
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import json
 import math
 import zlib
@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter, QPen
 
 from .model import ImageDocument, orient
 from . import spots, layerediting
+from .history import next_order
 
 
 @dataclass
@@ -84,6 +85,7 @@ class CanvasPatch:
     transparent: bool
     previous_state: int
     next_state: int
+    order: int = field(default_factory=next_order)
 
     @property
     def bytes(self):
@@ -228,6 +230,9 @@ class EditSession:
     @property
     def can_redo(self):
         return self.cursor < len(self.history)
+
+    def discard_redo(self):
+        del self.history[self.cursor:]
 
     def changed_channels(self):
         doc = self.document
@@ -390,13 +395,14 @@ class EditSession:
         self.original.layer_state = state
         if self.document is not self.original:
             self.document = replace(self.document, layer_stack=stack, layer_state=state)
-        # Spot history may predate lazy layer loading. Its captured layouts
-        # describe this same baseline layer state, so undo must retain it.
+        # Only baseline layouts describe this lazy-loaded stack. Expanded
+        # layouts retain their own rebased stack (or their preservation error).
         for patch in self.history:
-            if isinstance(patch, StructuralPatch):
+            if isinstance(patch, (StructuralPatch, CanvasPatch)):
                 for layout in (patch.before, patch.after):
-                    if layout.layer_state is None:
+                    if layout.canvas is None and layout.layer_state is None:
                         layout.layer_state = state
+                        layout.layer_stack = stack
 
     def _layer_change(self, state):
         doc = self.document
