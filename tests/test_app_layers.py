@@ -243,16 +243,15 @@ def test_layer_without_cached_pixels_clears_previous_artwork_and_reports_reason(
         cleanup(app, window)
 
 
-def test_layers_are_pan_only_and_channel_painting_retains_loaded_stack(tmp_path):
+def test_layers_tab_controls_and_channel_painting_retains_loaded_stack(tmp_path):
     app, window = opened(tmp_path)
     try:
         window.tabs.setCurrentIndex(1)
         drain(app, window)
         stack = window.doc.layer_stack
-        assert not window.edit_toolbar.isEnabled()
-        assert not window.view.drawing_enabled
-        window.apply_drawing("Box", (5., 5.), (9., 9.))
-        assert not window.edits.dirty
+        assert window.edit_toolbar.isEnabled()
+        assert window.view.drawing_enabled
+        assert window.tool_combo.currentText() == "Pan"
         window.tabs.setCurrentIndex(0)
         window.channels.setCurrentItem(window.channels.topLevelItem(4))
         drain(app, window)
@@ -267,8 +266,8 @@ def test_layers_are_pan_only_and_channel_painting_retains_loaded_stack(tmp_path)
         assert window.doc.layer_stack is stack
         assert window.tool_combo.currentText() == "Pan"
         assert window.view.tool == "Pan"
-        assert not window.edit_toolbar.isEnabled()
-        assert not window.view.drawing_enabled
+        assert window.edit_toolbar.isEnabled()
+        assert window.view.drawing_enabled
         assert layer_preservation_reason(window.edits.original, window.doc) is None
     finally:
         cleanup(app, window)

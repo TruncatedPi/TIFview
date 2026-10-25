@@ -449,3 +449,19 @@ normalization growth beyond the SVG byte limit.
 The full local suite passes 704 tests including private samples. A further
 105 UI/vector regressions pass after the final fractional-coordinate dirty-state
 adjustment. The Windows executable retains version metadata and packaged checks.
+
+## Drawing onto new pixel layers
+
+The complete local suite passes 773 tests, including private samples. New drawing
+coverage spans Box/Ellipse/Line/Text, 8/16-bit RGB/CMYK/Gray/WhiteIsZero, layered
+and unlayered sources, exact undo/redo, visibility/order and independent saved
+layer reads. A synthetic linear RGB ICC profile verifies that both RGB tuples
+and QColor inputs convert middle gray to native value 55 instead of 128, and
+16-bit conversion scales that result correctly. Invalid ICC conversion leaves
+the document unchanged and reports an error. Drawing while an individual layer
+is selected returns the viewer to the composite and displays the new pixels.
+
+The packaged check now creates a drawn layer after SVG import and canvas growth,
+verifies visible green pixels and untouched spot/selection planes, saves and
+reopens a layered TIFF, and checks undo/redo. Photoshop/PrintExp validation of
+this new drawing workflow remains pending.

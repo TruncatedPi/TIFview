@@ -189,7 +189,7 @@ def run(image_path: str, report_path: str) -> int:
                 "SYNTHETIC original base", "SYNTHETIC overlay"]
             assert window.doc.layer_state.order == (1, 0)
             assert window.doc.layer_state.visible == frozenset({0})
-            assert not window.view.drawing_enabled
+            assert window.view.drawing_enabled and window.edit_toolbar.isEnabled()
             layer_start = window.doc.samples.copy()
             window.layers_panel.tree.setCurrentItem(window.layers_panel.tree.topLevelItem(1))
             drain_layers()
@@ -297,6 +297,31 @@ def run(image_path: str, report_path: str) -> int:
             np.testing.assert_array_equal(window.doc.samples, before_svg_layer)
             window.edits.redo(); window.edits_changed(); drain_layers()
             np.testing.assert_array_equal(window.doc.samples, svg_layer_doc.samples)
+            before_drawing = window.doc.samples.copy()
+            window.update_layers_panel(selected=0)
+            window.layer_selection_changed(); drain_layers()
+            assert window.layers_panel.selected_index() == 0
+            window.perform_layer_change("add_drawn_layer", "Box", (5., 5.), (25., 25.),
+                                        (0, 255, 0), 3, True, "", "Segoe UI", 32, "Drawing test layer")
+            drain_layers()
+            assert window.layers_panel.selected_index() is None
+            assert window.doc.layer_stack.layers[-1].name == "Drawing test layer"
+            np.testing.assert_array_equal(window.doc.samples[15, 15, :3], [0, 255, 0])
+            assert window.view.image_item.pixmap().toImage().pixelColor(15, 15).green() == 255
+            for channel in window.doc.channels[window.doc.base_count:]:
+                if channel.kind != "Transparency":
+                    np.testing.assert_array_equal(window.doc.samples[..., channel.index], before_drawing[..., channel.index])
+            drawing_path = report.with_name(report.stem + "-draw-layer.tif")
+            if drawing_path.exists():
+                raise FileExistsError(drawing_path)
+            save_tiff_copy(window.edits.original, window.doc, drawing_path)
+            drawing_doc = load_image(drawing_path)
+            np.testing.assert_array_equal(drawing_doc.samples, window.doc.samples)
+            assert any(layer.name == "Drawing test layer" for layer in LayerStack.from_document(drawing_doc).layers)
+            window.edits.undo(); window.edits_changed(); drain_layers()
+            np.testing.assert_array_equal(window.doc.samples, before_drawing)
+            window.edits.redo(); window.edits_changed(); drain_layers()
+            np.testing.assert_array_equal(window.doc.samples, drawing_doc.samples)
             # Synthetic 25%-75% rectangle and solid RGB-red descriptor, with
             # no cached raster pixels (no private/customer data in the bundle).
             shape = read_shape({
@@ -325,7 +350,7 @@ def run(image_path: str, report_path: str) -> int:
                                   "rebuilt image pyramid", "lazy Qt layer pixels", "layer visibility and order",
                                   "synchronized native layer composite and transparency", "saved compressed layer pixels",
                                   "mixed layer undo and redo", "frozen Qt SVG renderer and alignment undo/redo",
-                                  "physical SVG export and alignment job round trip", "absolute SVG shape and stroke units", "manual canvas edge controls", "SVG pixel layer save, readback and undo", "native solid vector shape without cached pixels", "transparent canvas growth, raster layers, copy save and exact undo", "untouched source"])
+                                  "physical SVG export and alignment job round trip", "absolute SVG shape and stroke units", "manual canvas edge controls", "SVG pixel layer save, readback and undo", "drawn pixel layer display, spot retention, copy save and undo", "native solid vector shape without cached pixels", "transparent canvas growth, raster layers, copy save and exact undo", "untouched source"])
         except Exception as exc:
             result.update(passed=False, error=traceback.format_exc())
         if window.previewer is not None:

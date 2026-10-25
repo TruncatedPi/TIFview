@@ -138,7 +138,7 @@ class LayersPanel(QWidget):
         if self._edit_reason:
             self.notice.setText(f"Layer changes cannot be saved: {self._edit_reason}")
         elif not self._order:
-            self.notice.setText("No Photoshop layer records are available in this file.")
+            self.notice.setText("No Photoshop layer records yet. Select a drawing tool (Box, Ellipse, Line, Text) to add a layer.")
         else:
             self.notice.setText("Select any layer to inspect its pixels. Checkboxes and order affect the layer stack and saved TIFF copy. The original stays untouched.")
 

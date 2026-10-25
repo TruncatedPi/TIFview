@@ -421,6 +421,14 @@ class EditSession:
         result, added = add_svg_layer(self.original, self.document, artwork, placement, name)
         return self._record_layer_change(result, added)
 
+    def add_drawn_layer(self, tool: str, start: tuple[float, float], end: tuple[float, float],
+                        color=(0, 0, 0), width: int = 3, filled: bool = False, text: str = "",
+                        font_family: str = "Segoe UI", text_size: int = 32, name: str | None = None):
+        from .drawlayer import add_drawn_layer
+        result, added = add_drawn_layer(self.original, self.document, tool, start, end,
+                                        color, width, filled, text, font_family, text_size, name)
+        return self._record_layer_change(result, added)
+
     def _record_layer_change(self, result, added):
         doc = self.document
         indices = tuple(range(doc.base_count)) + tuple(c.index for c in doc.channels if c.kind == "Transparency")

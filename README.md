@@ -175,10 +175,33 @@ values. Very large incompressible changes can still exceed that budget.
 Compositing uses bounded temporary arrays and a direct native-pixel path when
 only one layer is visible. The first layer edit still checks the original
 merged image against the supported layer stack; later edits reuse that check.
-Pixel drawing remains in the **Channels** tab; painting underlying layer pixels
-is not implemented. The user validated both layer visibility/order test copies
-in **Photoshop and PrintExp** on the shop PC. This confirms the tested sample
-workflow; unsupported layer features remain subject to the restrictions above.
+Channel pixel drawing is in the **Channels** tab, while drawing onto new Photoshop
+pixel layers is available in the **Layers** tab; painting directly into underlying
+existing layer pixels is not implemented.
+
+### Draw onto a new pixel layer
+
+You can add boxes, ellipses, lines and text directly onto a new named Photoshop
+pixel layer, preserving compatible existing layers and their original pixels:
+
+1. Open the **Layers** tab.
+2. Select a drawing tool from the toolbar (**Box**, **Ellipse**, **Line**, or **Text**).
+3. Set your preferred stroke width, fill mode, font, text size and colour. Click
+   the **Colour** button to choose an RGB colour, converted into the document's
+   colour mode and embedded profile.
+4. Drag or click on the canvas to draw.
+5. Enter a layer name in the dialog prompt (e.g. `Box 1`, `Text 1`).
+6. The new layer appears in the layer stack where you can toggle its visibility,
+   reorder it, and undo/redo changes with **Ctrl+Z / Ctrl+Y**.
+7. **Save TIFF copy** preserves all compatible existing Photoshop layers alongside
+   the new layer in tag 37724.
+
+The user validated both layer visibility/order test copies in **Photoshop and
+PrintExp** on the shop PC. This confirms the tested sample workflow;
+unsupported layer features remain subject to the restrictions above.
+
+The new drawn-layer workflow is covered by automated tests; its saved TIFF
+copies still need separate Photoshop/PrintExp validation.
 
 ## Align TIFF and SVG for print-and-cut
 

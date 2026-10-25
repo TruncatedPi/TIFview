@@ -396,3 +396,36 @@ composite verification still runs in the worker. Original raster fxrp coordinate
 use the cumulative source offset even when generated layers move incrementally,
 so writer byte comparisons remain exact. Canonical SVG size is checked before
 renderer construction, keeping imported artwork within the job reader's limit.
+
+
+## Pixel layer drawing
+
+`drawlayer.py` allows rasterizing shapes (boxes, ellipses, lines) and text
+directly into a new named Photoshop layer, eliminating the requirement to
+flatten the document when drawing onto RGB/CMYK/grayscale images.
+
+Drawn layers retain the document's native process sample depth (unsigned
+8/16-bit RGB, CMYK, Gray, or WhiteIsZero). Drawing colours are converted from
+sRGB through the embedded ICC profile when present, raising a clear error if
+the profile transformation fails rather than falling back to unmanaged colour.
+Drawing shapes or text uses image pixel coordinates without requiring DPI
+calibration. Antialiased alpha coverage masks are calculated by `raster_shape`,
+cropped to tight non-zero bounding boxes, and packed with process samples into
+a standalone `PsdLayer` record via `raster_block`. The single layer is appended
+to the `LayerStack` using `append_layer`, splicing records without
+reserializing pre-existing Photoshop layers. Unlayered sources automatically
+receive a base raster layer (`base_stack`).
+
+The UI activates drawing tools on the Layers tab, enabling Box, Ellipse, Line,
+and Text tools with colour selection via `QColorDialog`, stroke width, filled
+mode, and font settings. On completion of drawing, users are prompted to name
+the layer (defaulting to e.g. `Box 1`). The new layer is added at the top of
+the stack and the Layers panel selects the composite (`Layer stack`) so the
+newly drawn layer is immediately visible on the canvas.
+
+Every layer addition, visibility toggle, and reordering participates in
+`EditSession` history with lossless `LayerDelta` and `LayerPatch` tracking,
+ensuring exact undo/redo. When saving a TIFF copy with `keep_layers=True`,
+`writer.py` verifies all original records byte-for-byte using
+`validated_layer_data`, updates tag 37724 with rewritten layer records, and
+verifies the primary merged composite on read-back.

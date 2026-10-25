@@ -23,7 +23,8 @@ from .reader import load_image
 from .render import RenderCancelled, grayscale, render
 from .preview import PreviewCache, preview_key
 from .editing import EditSession, CanvasPatch, raster_shape
-from .layerpanel import LayersPanel
+from .drawlayer import convert_color
+from .layerpanel import LayersPanel, _KEEP_SELECTION
 from .layers import LayerStack
 from .svg import Placement, SvgArtwork, SvgItem, export_svg, job_data, load_job, canvas_fit
 from .vectorpanel import VectorsPanel
@@ -557,8 +558,19 @@ class ViewerWindow(QMainWindow):
         self.shade = QSpinBox()
         self.shade.setRange(0, 255)
         self.shade.setToolTip("Paint shade: 0 = black, maximum = white in the selected grayscale channel. Intermediate values paint gray.")
-        self.edit_toolbar.addWidget(QLabel("  Shade "))
-        self.edit_toolbar.addWidget(self.shade)
+        self.shade_label = QLabel("  Shade ")
+        self.shade_label_action = self.edit_toolbar.addWidget(self.shade_label)
+        self.shade_action = self.edit_toolbar.addWidget(self.shade)
+        self.draw_color = (0, 0, 0)
+        self.draw_color_label = QLabel("  Colour ")
+        self.draw_color_button = QPushButton()
+        self.draw_color_button.setToolTip("Drawing colour for new pixel layer")
+        self.draw_color_button.clicked.connect(self.choose_draw_color)
+        self.update_draw_color_button()
+        self.draw_color_label_action = self.edit_toolbar.addWidget(self.draw_color_label)
+        self.draw_color_action = self.edit_toolbar.addWidget(self.draw_color_button)
+        self.draw_color_label_action.setVisible(False)
+        self.draw_color_action.setVisible(False)
         self.stroke = QSpinBox()
         self.stroke.setRange(1, 300)
         self.stroke.setValue(3)
@@ -577,7 +589,8 @@ class ViewerWindow(QMainWindow):
         self.font_combo = QFontComboBox()
         self.font_combo.setMaximumWidth(150)
         self.edit_toolbar.addWidget(self.font_combo)
-        self.edit_toolbar.addWidget(QLabel("  Select one channel to edit its pixels"))
+        self.edit_toolbar_label = QLabel("  Select one channel to edit its pixels")
+        self.edit_toolbar.addWidget(self.edit_toolbar_label)
         self.tool_combo.currentTextChanged.connect(self.change_tool)
         self.stroke.valueChanged.connect(self.drawing_style_changed)
         self.fill.toggled.connect(self.drawing_style_changed)
@@ -783,6 +796,19 @@ class ViewerWindow(QMainWindow):
             self._requested_preview = self._displayed_preview = key
             self.view.set_image(preview, reset=True)
 
+    def update_draw_color_button(self):
+        r, g, b = self.draw_color
+        self.draw_color_button.setText(f"RGB {r}, {g}, {b}")
+        swatch = QPixmap(14, 14)
+        swatch.fill(QColor(*self.draw_color))
+        self.draw_color_button.setIcon(QIcon(swatch))
+
+    def choose_draw_color(self):
+        chosen = QColorDialog.getColor(QColor(*self.draw_color), self, "Choose layer drawing colour")
+        if chosen.isValid():
+            self.draw_color = (chosen.red(), chosen.green(), chosen.blue())
+            self.update_draw_color_button()
+
     def change_tool(self, tool):
         self.view.set_tool(tool)
         if tool != "Pan":
@@ -986,7 +1012,7 @@ class ViewerWindow(QMainWindow):
         self.set_controls()
         self.refresh()
 
-    def update_layers_panel(self):
+    def update_layers_panel(self, selected=_KEEP_SELECTION):
         if self.doc and self.doc.layer_stack is None and not self.doc.metadata.get("canvas_layer_reason"):
             self.layers_panel.set_layers(None)
             self.layers_panel.set_edit_reason(None)
@@ -997,14 +1023,14 @@ class ViewerWindow(QMainWindow):
             return
         if self.doc and self.doc.layer_stack:
             state = self.doc.layer_state
-            self.layers_panel.set_layers(self.doc.layer_stack, state.order, state.visible)
+            self.layers_panel.set_layers(self.doc.layer_stack, state.order, state.visible, selected=selected)
 
     def layer_selection_changed(self, *_):
         self.set_controls()
         self.refresh()
 
     def perform_layer_change(self, operation, *args):
-        if not self.edits or (operation not in ("expand_canvas", "add_svg_layer") and not self.doc.layer_stack) or self.loader or self.saver or self.layer_busy():
+        if not self.edits or (operation not in ("expand_canvas", "add_svg_layer", "add_drawn_layer") and not self.doc.layer_stack) or self.loader or self.saver or self.layer_busy():
             return
         if self.previewer:
             # Finish lazy decoding before asking the backend to use its cache.
@@ -1017,12 +1043,18 @@ class ViewerWindow(QMainWindow):
         def failed(message):
             self._canvas_overlay = None
             self._save_after_svg = False
-            QMessageBox.warning(self, "Could not expand canvas" if operation == "expand_canvas" else "Could not change layers", message)
+            title = ("Could not expand canvas" if operation == "expand_canvas"
+                     else "Could not add layer" if operation in ("add_svg_layer", "add_drawn_layer")
+                     else "Could not change layers")
+            QMessageBox.warning(self, title, message)
         self.layer_editor.failed.connect(failed)
         self.layer_editor.finished.connect(self.layer_edit_finished)
         self.layer_editor.start()
         self.set_controls()
-        self.statusBar().showMessage("Expanding canvas without resampling pixels…" if operation == "expand_canvas" else "Updating layer stack and merged channel pixels…")
+        msg = ("Expanding canvas without resampling pixels…" if operation == "expand_canvas"
+               else "Adding pixel layer…" if operation in ("add_svg_layer", "add_drawn_layer")
+               else "Updating layer stack and merged channel pixels…")
+        self.statusBar().showMessage(msg)
 
     def layer_visibility_changed(self, index, visible):
         self.perform_layer_change("set_layer_visibility", index, visible)
@@ -1033,9 +1065,14 @@ class ViewerWindow(QMainWindow):
     def layer_edit_finished(self):
         worker, self.layer_editor = self.layer_editor, None
         added_svg = worker.operation == "add_svg_layer" and worker.succeeded
+        added_draw = worker.operation == "add_drawn_layer" and worker.succeeded
         worker.deleteLater()
         if added_svg:
             self.remove_svg()
+            self.update_layers_panel(selected=None)
+            self.tabs.setCurrentWidget(self.layers_panel)
+        if added_draw:
+            self.update_layers_panel(selected=None)
             self.tabs.setCurrentWidget(self.layers_panel)
         self.set_controls()
         self.refresh()
@@ -1202,8 +1239,46 @@ class ViewerWindow(QMainWindow):
         self.view.filled = self.fill.isChecked()
 
     def apply_drawing(self, tool, start, end, text=None):
+        if self.edits is None or self.saver is not None or self.loader is not None or self.previewer is not None or self.layer_busy():
+            return
+        if self.layer_mode():
+            if not self.doc or self.doc.orientation != 1 or self.doc.metadata.get("canvas_layer_reason"):
+                return
+            if tool == "Text" and text is None:
+                text, accepted = QInputDialog.getMultiLineText(self, "Add text layer", "Text:")
+                if not accepted or not text.strip():
+                    return
+            try:
+                mask = raster_shape(tool, start, end, (self.doc.width, self.doc.height), self.stroke.value(),
+                                    self.fill.isChecked(), text or "", self.font_combo.currentFont().family(),
+                                    self.text_size.value())
+                if mask is None:
+                    return
+                convert_color(self.doc, self.draw_color)
+                existing_names = set()
+                if self.doc and self.doc.layer_stack:
+                    existing_names = {l.name for l in self.doc.layer_stack.layers}
+                num = 1
+                while f"{tool} {num}" in existing_names:
+                    num += 1
+                default_name = f"{tool} {num}"
+                name, accepted = QInputDialog.getText(
+                    self, f"Add {tool.lower()} layer",
+                    f"Layer name\nRendered in {self.doc.color_mode} colour mode.",
+                    text=default_name,
+                )
+                if not accepted or not name.strip():
+                    return
+                self.perform_layer_change("add_drawn_layer", tool, start, end, self.draw_color,
+                                          self.stroke.value(), self.fill.isChecked(), text or "",
+                                          self.font_combo.currentFont().family(), self.text_size.value(),
+                                          name.strip())
+            except Exception as exc:
+                QMessageBox.warning(self, "Could not add layer", str(exc))
+            return
+
         index = self.selected_index()
-        if self.edits is None or index is None or self.saver is not None or self.loader is not None or self.previewer is not None or self.layer_busy() or self.layer_mode():
+        if index is None:
             return
         if tool == "Text" and text is None:
             text, accepted = QInputDialog.getMultiLineText(self, "Paint text into channel", "Text:")
@@ -1240,7 +1315,8 @@ class ViewerWindow(QMainWindow):
         self._displayed_preview = None
         self.setWindowModified(self.edits.dirty or self.vectors_panel.dirty)
         self.rebuild_channels(selected_id)
-        self.update_layers_panel()
+        added_layer = self.layer_editor is not None and self.layer_editor.operation in ("add_svg_layer", "add_drawn_layer")
+        self.update_layers_panel(selected=None if added_layer else _KEEP_SELECTION)
         self.update_dimensions()
         self.set_controls()
         if (self.layer_mode() and self.doc.layer_stack is None and self.doc.metadata.get("has_photoshop_layers")
@@ -1408,9 +1484,29 @@ class ViewerWindow(QMainWindow):
             history = self.history_target(forward)
             available = history and (history.can_redo if forward else history.can_undo)
             action.setEnabled(bool(available and not busy and (not rendering or history is self.vectors_panel)))
-        self.edit_toolbar.setEnabled(editable and selected is not None and not busy and not rendering and self.tabs.currentIndex() == 0)
+        channel_drawing_allowed = (editable and selected is not None and not busy and not rendering
+                                   and self.tabs.currentIndex() == 0)
+        layer_drawing_allowed = (editable and not busy and not rendering and self.tabs.currentIndex() == 1
+                                 and not (self.doc and self.doc.metadata.get("canvas_layer_reason"))
+                                 and (self.doc and self.doc.orientation == 1))
+        can_draw = channel_drawing_allowed or layer_drawing_allowed
+        self.edit_toolbar.setEnabled(can_draw)
         self.channels.setEnabled(self.loader is None)
-        self.view.drawing_enabled = editable and selected is not None and not busy and not rendering and self.tabs.currentIndex() == 0
+        self.view.drawing_enabled = can_draw
+
+        in_layer_tab = self.tabs.currentIndex() == 1
+        self.shade_label_action.setVisible(not in_layer_tab)
+        self.shade_action.setVisible(not in_layer_tab)
+        self.draw_color_label_action.setVisible(in_layer_tab)
+        self.draw_color_action.setVisible(in_layer_tab)
+        if in_layer_tab:
+            self.edit_toolbar_label.setText("  Draw to add a pixel layer")
+        else:
+            self.edit_toolbar_label.setText(
+                "  Select one channel to edit its pixels" if selected is None
+                else f"  Editing {self.doc.channel_label(selected)}"
+            )
+
         self.layers_panel.set_busy(busy)
         if self.doc and self.doc.layer_stack:
             stack, state = self.doc.layer_stack, self.doc.layer_state
@@ -1429,7 +1525,7 @@ class ViewerWindow(QMainWindow):
                     self.layers_panel.notice.setText("Showing saved TIFF composite. Layer-stack rendering unavailable: " + note)
         if self.doc and self.doc.metadata.get("canvas_layer_reason"):
             self.layers_panel.set_edit_reason(self.doc.metadata["canvas_layer_reason"] + ". Undo canvas expansion to inspect original layers.")
-        if not editable or selected is None or busy or self.layer_mode():
+        if not can_draw:
             self.tool_combo.setCurrentIndex(0)
             self.view.set_tool("Pan")
         if self.doc:
@@ -1488,6 +1584,9 @@ class ViewerWindow(QMainWindow):
             stride = self.layer_preview_stride()
             state = self.doc.layer_state
             return (self._preview_version, stride, "layer", index, state), {"layer": index}
+        if self.layer_mode() and self.doc.layer_stack is None:
+            return (self._preview_version, 1, "layer-empty-composite"), dict(selected=None,
+                    visible={c.index for c in self.doc.channels if c.index < self.doc.base_count or c.kind == "Transparency"})
         settings = dict(selected=self.selected_index(), colored=self.style_combo.currentIndex() == 1,
                         visible=self.visible_indices(), overlays=self.overlays.isChecked(),
                         opacity=self.opacity.value() / 100, invert=self.invert.isChecked(), colors=dict(self.colors))
@@ -1511,7 +1610,7 @@ class ViewerWindow(QMainWindow):
     def refresh(self):
         if self.doc is None or self.loader is not None or self.layer_busy():
             return
-        if self.layer_mode() and self.doc.layer_stack is None and not self.doc.metadata.get("canvas_layer_reason"):
+        if self.layer_mode() and self.doc.layer_stack is None and self.doc.metadata.get("has_photoshop_layers") and not self.doc.metadata.get("canvas_layer_reason"):
             if self.previewer:
                 self.previewer.requestInterruption()
             self._requested_preview = self._displayed_preview = self._pending_preview = None
