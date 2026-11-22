@@ -377,7 +377,7 @@ def test_image_limits_rejection_and_exact_boundaries(tmp_path, monkeypatch):
 
     over_path = tmp_path / "over_pixels.png"
     Image.new("RGB", (5, 11)).save(over_path)
-    with pytest.raises(UnsupportedImageError, match="40-million-pixel or 512 MiB decoded limit"):
+    with pytest.raises(UnsupportedImageError, match="150-million-pixel or 1024 MiB decoded limit"):
         load_image(over_path)
 
     # Common format decoded bytes boundary
@@ -390,10 +390,10 @@ def test_image_limits_rejection_and_exact_boundaries(tmp_path, monkeypatch):
 
     over_bytes_path = tmp_path / "over_bytes.png"
     Image.new("RGB", (10, 11)).save(over_bytes_path)  # 110 * 3 = 330 bytes
-    with pytest.raises(UnsupportedImageError, match="40-million-pixel or 512 MiB decoded limit"):
+    with pytest.raises(UnsupportedImageError, match="150-million-pixel or 1024 MiB decoded limit"):
         load_image(over_bytes_path)
 
     # TIFF format respects limits
     monkeypatch.setattr("tifview.reader._MAX_PIXELS", 50)
-    with pytest.raises(UnsupportedImageError, match="40-million-pixel or 512 MiB decoded limit"):
+    with pytest.raises(UnsupportedImageError, match="150-million-pixel or 1024 MiB decoded limit"):
         load_image(write_tiff(tmp_path, np.zeros((6, 10, 3), np.uint8)))

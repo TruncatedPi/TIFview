@@ -31,10 +31,22 @@ _ATTRIBUTES = {"id", "version", "width", "height", "x", "y", "viewBox", "preserv
                "transform", "d", "points", "x1", "x2", "y1", "y2", "cx", "cy", "r", "rx", "ry",
                "fill", "fill-rule", "fill-opacity", "stroke", "stroke-width", "stroke-linecap",
                "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset",
-               "stroke-opacity", "opacity", "display", "visibility", "style", "overflow"}
+               "stroke-opacity", "opacity", "display", "visibility", "style", "overflow",
+               "zoomAndPan", "baseProfile", "contentStyleType", "contentScriptType",
+               "space", "aria-label", "role", "class", "enable-background"}
 _STYLE = {"fill", "fill-rule", "fill-opacity", "stroke", "stroke-width", "stroke-linecap",
           "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset",
           "stroke-opacity", "opacity", "display", "visibility"}
+_TEXT_STYLE_PROPS = {"font-family", "font-size", "font-weight", "font-style", "font-variant",
+                     "font-stretch", "text-anchor", "letter-spacing", "word-spacing", "line-height"}
+_IGNORED_NS_PREFIXES = (
+    "http://sodipodi.sourceforge.net/",
+    "http://www.inkscape.org/",
+    "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "http://creativecommons.org/ns#",
+    "http://purl.org/dc/",
+    "http://ns.adobe.com/",
+)
 
 
 def _numbers(value):
@@ -150,6 +162,99 @@ def _normalize_lengths(root):
     visit(root)
 
 
+def _strip_editor_elements(element):
+    for child in list(element):
+        tag = child.tag
+        if tag.startswith("{") and any(tag[1:].startswith(prefix) for prefix in _IGNORED_NS_PREFIXES):
+            element.remove(child)
+        else:
+            _strip_editor_elements(child)
+
+
+_SIMPLE_SELECTOR = re.compile(r"^(?:(\*|[A-Za-z_][\w-]*))?(?:(\.[A-Za-z_][\w-]*)|(\#[A-Za-z_][\w-]*))?$")
+
+
+def _inline_styles(root):
+    styles = []
+    parents = {child: parent for parent in root.iter() for child in parent}
+    for el in list(root.iter()):
+        local = el.tag.rsplit("}", 1)[-1]
+        ns_ok = el.tag == "style" or el.tag == f"{{{SVG_NS}}}style"
+        if local == "style" and ns_ok:
+            styles.append(el)
+    if not styles:
+        return
+    rules = []
+    for style_el in styles:
+        css = "".join(style_el.itertext())
+        parents[style_el].remove(style_el)
+        cleaned = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        if re.search(r"@import", cleaned, re.I):
+            raise ValueError("External SVG stylesheets are unsupported.")
+        for ref in re.findall(r"url\s*\(\s*['\"]?([^)'\"]+)['\"]?\s*\)", cleaned, re.I):
+            if not ref.strip().startswith("#"):
+                raise ValueError("External SVG resources are unsupported.")
+        pos = 0
+        for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", cleaned):
+            if cleaned[pos:match.start()].strip():
+                raise ValueError("Unsupported SVG stylesheet rule.")
+            pos = match.end()
+            sel_text, body = match.group(1).strip(), match.group(2).strip()
+            if sel_text.startswith("@"):
+                raise ValueError("Unsupported SVG CSS at-rule.")
+            selectors = [s.strip() for s in sel_text.split(",") if s.strip()]
+            if not selectors:
+                continue
+            parsed_selectors = []
+            for sel in selectors:
+                m = _SIMPLE_SELECTOR.fullmatch(sel)
+                if not m or (m.group(1) is None and m.group(2) is None and m.group(3) is None):
+                    raise ValueError(f"Unsupported SVG CSS selector: {sel}")
+                parsed_selectors.append((m.group(1), m.group(2)[1:] if m.group(2) else None,
+                                         m.group(3)[1:] if m.group(3) else None))
+            text_only = all(tag in ("text", "tspan") for tag, _, _ in parsed_selectors)
+            decls = []
+            for declaration in body.split(";"):
+                if not declaration.strip():
+                    continue
+                prop, sep, val = declaration.partition(":")
+                if not sep:
+                    raise ValueError("Invalid SVG stylesheet declaration.")
+                prop_name = prop.strip()
+                if prop_name not in _STYLE:
+                    if prop_name in _TEXT_STYLE_PROPS or text_only:
+                        continue
+                    raise ValueError(f"SVG style {prop_name} is unsupported.")
+                decls.append(f"{prop_name}:{val.strip()}")
+            if decls:
+                rules.append((parsed_selectors, ";".join(decls)))
+        if cleaned[pos:].strip():
+            raise ValueError("Invalid SVG stylesheet syntax.")
+    for el in root.iter():
+        local = el.tag.rsplit("}", 1)[-1]
+        if local in ("metadata", "title", "desc"):
+            continue
+        classes = set((el.get("class") or "").split())
+        el_id = el.get("id")
+        matched_decls = []
+        for parsed_selectors, decl_str in rules:
+            for tag_req, cls_req, id_req in parsed_selectors:
+                if tag_req is not None and tag_req != "*" and tag_req != local:
+                    continue
+                if cls_req is not None and cls_req not in classes:
+                    continue
+                if id_req is not None and id_req != el_id:
+                    continue
+                matched_decls.append(decl_str)
+                break
+        if matched_decls:
+            existing = el.get("style", "").strip().strip(";")
+            combined = ";".join(matched_decls + ([existing] if existing else []))
+            el.set("style", combined)
+        if "class" in el.attrib:
+            del el.attrib["class"]
+
+
 def _root(raw):
     if not raw or len(raw) > MAX_SVG_BYTES:
         raise ValueError("SVG exceeds the 2 MiB limit or is empty.")
@@ -192,6 +297,8 @@ class SvgArtwork:
     @classmethod
     def from_bytes(cls, raw, name="Artwork.svg"):
         root = _root(raw)
+        _strip_editor_elements(root)
+        _inline_styles(root)
         width, height = length_mm(root.get("width")), length_mm(root.get("height"))
         if "transform" in root.attrib or root.get("overflow", "hidden") != "hidden":
             raise ValueError("Root SVG transforms or visible overflow are unsupported; move transforms into a group.")

@@ -19,6 +19,7 @@ class VectorsPanel(QWidget):
     remove_requested = Signal()
     expand_requested = Signal()
     layer_requested = Signal()
+    flatten_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -72,6 +73,11 @@ class VectorsPanel(QWidget):
         self.layer_button = QPushButton("Add SVG as layer…")
         self.layer_button.clicked.connect(self.layer_requested)
         layout.addWidget(self.layer_button)
+        self.flatten_button = QPushButton("Flatten old layers to add SVG")
+        self.flatten_button.setToolTip("Flatten old Photoshop layers into a single base layer so the SVG can be added as a layer")
+        self.flatten_button.clicked.connect(self.flatten_requested)
+        self.flatten_button.hide()
+        layout.addWidget(self.flatten_button)
         self.save_button = QPushButton("Save alignment job…")
         self.save_button.clicked.connect(self.save_requested)
         self.load_button = QPushButton("Open alignment job…")

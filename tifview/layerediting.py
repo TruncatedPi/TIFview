@@ -41,7 +41,7 @@ def composite_samples(doc: ImageDocument, stack, state: LayerState) -> np.ndarra
     return result
 
 
-def _protected_pixels(doc: ImageDocument, composite: np.ndarray):
+def _protected_pixels(doc: ImageDocument, composite: np.ndarray, *, matte_opaque: bool = False):
     transparency = [c for c in doc.channels if c.kind == "Transparency"]
     if len(transparency) > 1:
         raise ValueError("Layer editing supports at most one image transparency channel")
@@ -50,6 +50,16 @@ def _protected_pixels(doc: ImageDocument, composite: np.ndarray):
     alpha = composite[..., doc.base_count]
     indices = tuple(range(doc.base_count)) + (() if alpha_channel is None else (alpha_channel.index,))
     if alpha_channel is None:
+        if matte_opaque and np.any(alpha != doc.maximum):
+            white = 0 if doc.color_mode in ("CMYK", "WhiteIsZero") else doc.maximum
+            work_dtype = np.uint32 if doc.bits == 8 else np.uint64
+            values = np.empty((*alpha.shape, len(indices)), dtype=doc.samples.dtype)
+            rows = max(1, 65536 // max(1, alpha.shape[1]))
+            for y in range(0, alpha.shape[0], rows):
+                p = process[y:y + rows].astype(work_dtype)
+                a = alpha[y:y + rows, :, None].astype(work_dtype)
+                values[y:y + rows] = (p * a + white * (doc.maximum - a) + doc.maximum // 2) // doc.maximum
+            return indices, values
         return indices, process
     values = np.empty((*alpha.shape, len(indices)), dtype=doc.samples.dtype)
     values[..., -1] = alpha
@@ -65,6 +75,56 @@ def _protected_pixels(doc: ImageDocument, composite: np.ndarray):
     else:
         values[..., :doc.base_count] = process
     return indices, values
+
+
+def baseline_matches(doc: ImageDocument, stack, state: LayerState) -> bool:
+    """Compare document samples against the layer stack, allowing Photoshop matting and vector AA."""
+    baseline = composite_samples(doc, stack, state)
+    indices, expected = _protected_pixels(doc, baseline, matte_opaque=True)
+    if all(np.array_equal(doc.samples[..., index], expected[..., position])
+           for position, index in enumerate(indices)):
+        return True
+    if len(indices) == doc.base_count and np.any(baseline[..., -1] != doc.maximum):
+        _, straight = _protected_pixels(doc, baseline, matte_opaque=False)
+        if all(np.array_equal(doc.samples[..., index], straight[..., position])
+               for position, index in enumerate(indices)):
+            return True
+    layers = getattr(stack, "layers", ())
+    vectors = ([layers[i] for i in state.order
+                if 0 <= i < len(layers) and i in state.visible and layers[i].vector is not None and layers[i].opacity]
+               if layers else [])
+    if not vectors:
+        return False
+    h, w = doc.samples.shape[:2]
+    diff_mask = np.zeros((h, w), dtype=bool)
+    max_diff = 0
+    for position, index in enumerate(indices):
+        a = doc.samples[..., index]
+        b = expected[..., position]
+        mismatch = a != b
+        if np.any(mismatch):
+            diff_mask |= mismatch
+            delta = (np.maximum(a[mismatch], b[mismatch]) - np.minimum(a[mismatch], b[mismatch])).max()
+            max_diff = max(max_diff, int(delta))
+    if max_diff > doc.maximum * 0.25:
+        return False
+    edge_band = np.zeros((h, w), dtype=bool)
+    for layer in vectors:
+        va_local = stack.decode_layer(layer.index).alpha
+        if va_local.shape == (h, w):
+            va = va_local
+        else:
+            va = np.zeros((h, w), dtype=va_local.dtype)
+            y0, x0, y1, x1 = layer.paint_bounds
+            va[y0:y1, x0:x1] = va_local
+        edge = (va > 0) & (va < doc.maximum)
+        pad = np.pad(va, 1, mode="edge")
+        edge |= ((va != pad[:-2, 1:-1]) | (va != pad[2:, 1:-1])
+                 | (va != pad[1:-1, :-2]) | (va != pad[1:-1, 2:]))
+        ep = np.pad(edge, 1, mode="constant")
+        edge_band |= (edge | ep[:-2, 1:-1] | ep[2:, 1:-1] | ep[1:-1, :-2] | ep[1:-1, 2:]
+                      | ep[:-2, :-2] | ep[:-2, 2:] | ep[2:, :-2] | ep[2:, 2:])
+    return not np.any(diff_mask & ~edge_band)
 
 
 def require_unchanged_merged_pixels(original: ImageDocument, current: ImageDocument, stack):
@@ -96,11 +156,7 @@ def require_unchanged_merged_pixels(original: ImageDocument, current: ImageDocum
     if stack.composite_reason(stack.default_order, stack.default_visible) is None:
         checked = getattr(stack, "_baseline_verification", None)
         if checked is None or checked[0] is not original.samples:
-            state = default_state(stack)
-            baseline = composite_samples(original, stack, state)
-            indices, expected = _protected_pixels(original, baseline)
-            matched = all(np.array_equal(original.samples[..., index], expected[..., position])
-                          for position, index in enumerate(indices))
+            matched = baseline_matches(original, stack, default_state(stack))
             stack._baseline_verification = (original.samples, matched)
         if not stack._baseline_verification[1]:
             raise ValueError("The saved TIFF composite does not match the supported Photoshop layer pixels. "
@@ -135,8 +191,8 @@ def recompose_document(doc: ImageDocument, stack, state: LayerState):
     alpha = composite[..., doc.base_count]
     add_alpha = len(indices) == doc.base_count and np.any(alpha != doc.maximum)
     count = len(doc.channels) + int(add_alpha)
-    if count * doc.samples.shape[0] * doc.samples.shape[1] * doc.samples.dtype.itemsize > 512 * 2**20:
-        raise ValueError("Layer transparency would exceed the 512 MiB decoded-image limit")
+    if count * doc.samples.shape[0] * doc.samples.shape[1] * doc.samples.dtype.itemsize > 1024 * 2**20:
+        raise ValueError("Layer transparency would exceed the 1024 MiB decoded-image limit")
     channels = list(doc.channels)
     resources = doc.photoshop_resources
     metadata = dict(doc.metadata)

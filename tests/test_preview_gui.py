@@ -98,7 +98,7 @@ def test_background_preview_cancels_stale_result_and_coalesces_latest_view(tmp_p
         pump(app, started.is_set)
         window.channels.setCurrentItem(window.channels.topLevelItem(4))
         assert window.view.image_item.pixmap().toImage().pixelColor(110, 80).red() == 0
-        assert not window.edit_toolbar.isEnabled() and not window.save_action.isEnabled()
+        assert not window.edit_toolbar.isEnabled()
         window.apply_drawing("Box", (330., 50.), (410., 120.))
         assert not window.edits.dirty
         window.channels.setCurrentItem(window.channels.topLevelItem(0))

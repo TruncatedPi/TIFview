@@ -23,6 +23,7 @@ class LayersPanel(QWidget):
     selection_changed = Signal(object)  # Source layer ID, or None for the stack.
     visibility_requested = Signal(int, bool)
     move_requested = Signal(int, int)  # Source layer ID and top-to-bottom delta.
+    flatten_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -58,6 +59,11 @@ class LayersPanel(QWidget):
         self.notice.setWordWrap(True)
         self.notice.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.notice)
+        self.flatten_button = QPushButton("Flatten to single layer")
+        self.flatten_button.setToolTip("Flatten incompatible layers into a single editable layer so new layers can be added (Ctrl+Z undoes)")
+        self.flatten_button.clicked.connect(self.flatten_requested)
+        self.flatten_button.hide()
+        layout.addWidget(self.flatten_button)
         self.set_layers(None)
 
     def selected_index(self) -> int | None:
@@ -135,6 +141,8 @@ class LayersPanel(QWidget):
         position = self._order.index(selected) if selected in self._order else -1
         self.up_button.setEnabled(editable and position > 0)
         self.down_button.setEnabled(editable and 0 <= position < len(self._order) - 1)
+        self.flatten_button.setVisible(bool(self._edit_reason))
+        self.flatten_button.setEnabled(bool(self._edit_reason) and not self._busy)
         if self._edit_reason:
             self.notice.setText(f"Layer changes cannot be saved: {self._edit_reason}")
         elif not self._order:

@@ -90,9 +90,9 @@ class CanvasPatch:
     @property
     def bytes(self):
         # Undo crops lossless padding; redo recreates it. No full-image snapshots.
-        stacks = [self.before.layer_stack, self.after.layer_stack]
-        unique = {id(stack.data): stack.data for stack in stacks if stack is not None}
-        return self.before.bytes + self.after.bytes + 128 + sum(len(data) for data in unique.values())
+        changed = self.after.layer_stack is not None and self.after.layer_stack is not self.before.layer_stack
+        stack_bytes = len(self.after.layer_stack.data) if changed else 0
+        return self.before.bytes + self.after.bytes + 128 + stack_bytes
 
 
 @dataclass
@@ -117,7 +117,7 @@ class LayerDelta:
             encoded = zlib.compress(delta.tobytes(), level=1)
             used += len(encoded) + 32
             if used > budget:
-                raise ValueError("Layer change exceeds the 128 MiB undo limit")
+                raise ValueError("Layer change exceeds the undo limit")
             bands.append((stop - start, encoded))
         return cls(indices, bounds, tuple(bands))
 
@@ -133,11 +133,10 @@ class LayerPatch:
 
     @property
     def bytes(self):
-        stacks = (self.before.layer_stack, self.after.layer_stack)
-        changed = self.before.layer_stack is not self.after.layer_stack
-        unique = {id(s.data): s.data for s in stacks if s is not None} if changed else {}
+        changed = self.after.layer_stack is not None and self.before.layer_stack is not self.after.layer_stack
+        stack_bytes = len(self.after.layer_stack.data) if changed else 0
         return (self.before.bytes + self.after.bytes +
-                sum(len(data) for data in unique.values()) +
+                stack_bytes +
                 (0 if self.pixels is None else self.pixels.bytes) +
                 (0 if self.added_plane is None else self.added_plane.nbytes))
 
@@ -204,7 +203,7 @@ def raster_shape(tool: str, start: tuple[float, float], end: tuple[float, float]
 
 class EditSession:
     """Copy on first edit, bounded patch history, exact undo and redo."""
-    def __init__(self, original: ImageDocument, history_limit: int = 128 * 2**20):
+    def __init__(self, original: ImageDocument, history_limit: int = 256 * 2**20):
         self.original = self.document = original
         self._samples = None
         self.history: list[Patch | StructuralPatch | LayerPatch | CanvasPatch] = []
@@ -270,8 +269,9 @@ class EditSession:
         self._channel_ids = tuple(channel_ids)
 
     def _push(self, patch):
+        limit_mb = max(1, self.history_limit // 2**20)
         if patch.bytes > self.history_limit:
-            raise ValueError("Change exceeds the 128 MiB undo limit")
+            raise ValueError(f"Change exceeds the {limit_mb} MiB undo limit")
         del self.history[self.cursor:]
         self.history.append(patch)
         self.cursor += 1
@@ -294,8 +294,9 @@ class EditSession:
         """Add an empty native mask or duplicate a spot, retaining exact undo."""
         doc = self.document
         plane_bytes = doc.samples[..., 0].nbytes
+        limit_mb = max(1, self.history_limit // 2**20)
         if plane_bytes > self.history_limit:
-            raise ValueError("Channel exceeds the 128 MiB undo limit")
+            raise ValueError(f"Channel exceeds the {limit_mb} MiB undo limit")
         result = spots.add_spot(doc, name, color, solidity, source_index)
         index = len(doc.channels)
         ids = (*self.channel_ids, self._next_channel_id)
@@ -366,6 +367,18 @@ class EditSession:
         if forward:
             samples = pad_samples(doc, patch.width, patch.height, patch.left, patch.top,
                                   layout.channels, patch.transparent)
+            if (layout.canvas and layout.canvas.generated_transparency and
+                    layout.layer_stack is not None and layout.metadata.get("layer_composite_applied")):
+                temp_doc = replace(doc, samples=samples, channels=list(layout.channels),
+                                   photoshop_resources=layout.resources, metadata=dict(layout.metadata),
+                                   canvas=layout.canvas, layer_stack=layout.layer_stack,
+                                   layer_state=layout.layer_state)
+                composed = layout.layer_stack.composite_samples(layout.layer_state.order, layout.layer_state.visible)
+                indices, values = layerediting._protected_pixels(temp_doc, composed)
+                samples.flags.writeable = True
+                for position, index in enumerate(indices):
+                    samples[..., index] = values[..., position]
+                samples.flags.writeable = False
         else:
             before_size = patch.before.canvas.size if patch.before.canvas else (self.original.width, self.original.height)
             width, height = before_size
@@ -429,6 +442,39 @@ class EditSession:
                                         color, width, filled, text, font_family, text_size, name)
         return self._record_layer_change(result, added)
 
+    def _flattened_document(self, name: str = "Merged image"):
+        from .svglayer import base_stack
+        doc = self.document
+        spots._validate(doc)
+        if doc.orientation != 1:
+            raise ValueError("Flattening layers currently requires TIFF orientation 1")
+        stack = base_stack(doc, name=name)
+        state = layerediting.default_state(stack)
+        samples = doc.samples.copy()
+        metadata = dict(doc.metadata)
+        metadata.pop("canvas_layer_reason", None)
+        metadata.update(
+            has_photoshop_layers=True,
+            byte_order="IBM PC (little endian)",
+            layer_composite_applied=True,
+            layers_flattened=True,
+        )
+        canvas = replace(doc.canvas, layers_preserved=True) if doc.canvas is not None else None
+        transparency = next((c.index for c in doc.channels if c.kind == "Transparency"), None)
+        return replace(doc, samples=samples, metadata=metadata, canvas=canvas,
+                       layer_stack=stack, layer_state=state, generated_layer_data=stack.data,
+                       layer_merged_samples=samples, layer_merged_transparency=transparency)
+
+    def flatten_layers(self, name: str = "Merged image") -> bool:
+        result = self._flattened_document(name)
+        return self._record_layer_change(result, added=False)
+
+    def flatten_and_add_svg_layer(self, artwork, placement, name):
+        from .svglayer import add_svg_layer
+        flattened = self._flattened_document()
+        result, added = add_svg_layer(self.original, flattened, artwork, placement, name)
+        return self._record_layer_change(result, added)
+
     def _record_layer_change(self, result, added):
         doc = self.document
         indices = tuple(range(doc.base_count)) + tuple(c.index for c in doc.channels if c.kind == "Transparency")
@@ -439,12 +485,12 @@ class EditSession:
         pixel_patch = None
         ids = (*self.channel_ids, self._next_channel_id) if added else self.channel_ids
         before_layout, after_layout = Layout.capture(doc, self.channel_ids), Layout.capture(result, ids)
+        limit_mb = max(1, self.history_limit // 2**20)
         required = before_layout.bytes + after_layout.bytes + (result.samples[..., -1].nbytes if added else 0)
-        if before_layout.layer_stack is not after_layout.layer_stack:
-            stacks = (before_layout.layer_stack, after_layout.layer_stack)
-            required += sum(len(data) for data in {id(s.data): s.data for s in stacks if s is not None}.values())
+        if after_layout.layer_stack is not None and before_layout.layer_stack is not after_layout.layer_stack:
+            required += len(after_layout.layer_stack.data)
         if required > self.history_limit:
-            raise ValueError("Layer change exceeds the 128 MiB undo limit")
+            raise ValueError(f"Layer change exceeds the {limit_mb} MiB undo limit")
         if np.any(difference):
             ys = np.flatnonzero(np.any(difference, axis=1))
             xs = np.flatnonzero(np.any(difference, axis=0))
@@ -526,8 +572,9 @@ class EditSession:
         if np.array_equal(before, after):
             return False
         required = before.nbytes + after.nbytes
+        limit_mb = max(1, self.history_limit // 2**20)
         if required > self.history_limit:
-            raise ValueError("Drawing exceeds the 128 MiB undo limit. Draw a smaller region.")
+            raise ValueError(f"Drawing exceeds the {limit_mb} MiB undo limit. Draw a smaller region.")
         self._sequence += 1
         patch = Patch(indices, bounds, before, after, self.state, self._sequence)
         self._push(patch)

@@ -144,9 +144,7 @@ def add_drawn_layer(original, doc, tool: str, start: tuple[float, float], end: t
         layerediting.require_unchanged_merged_pixels(original, doc, stack)
 
     state = doc.layer_state or layerediting.default_state(stack)
-    baseline = layerediting.composite_samples(doc, stack, state)
-    indices, expected = layerediting._protected_pixels(doc, baseline)
-    if any(not np.array_equal(doc.samples[..., index], expected[..., position]) for position, index in enumerate(indices)):
+    if not layerediting.baseline_matches(doc, stack, state):
         raise ValueError("The existing layers do not reproduce the image pixels. Save/reopen a merged copy before adding a layer.")
 
     samples, alpha, bounds = draw_pixels(doc, tool, start, end, color, width, filled, text, font_family, text_size)
@@ -157,5 +155,6 @@ def add_drawn_layer(original, doc, tool: str, start: tuple[float, float], end: t
     shown = state.visible | {added_index}
     new_state = layerediting.LayerState((added_index, *state.order), frozenset(shown))
     result, added_alpha = layerediting.recompose_document(doc, new_stack, new_state)
+    canvas = replace(result.canvas, layers_preserved=True) if result.canvas is not None else None
     metadata = dict(result.metadata, has_photoshop_layers=True, byte_order="IBM PC (little endian)")
-    return replace(result, metadata=metadata, generated_layer_data=data), added_alpha
+    return replace(result, metadata=metadata, canvas=canvas, generated_layer_data=data), added_alpha

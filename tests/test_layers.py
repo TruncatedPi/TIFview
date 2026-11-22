@@ -386,8 +386,8 @@ def test_raw_block_limit_is_checked_before_copying_caller_data(monkeypatch):
         LayerStack.from_bytes(Oversized(), parent())
 
 
-@pytest.mark.parametrize("datatype,count,reason", [(7, 512 * 2**20 + 1, "raw metadata limit"),
-                                                   (1, 512 * 2**20 + 1, "raw metadata limit"),
+@pytest.mark.parametrize("datatype,count,reason", [(7, 1024 * 2**20 + 1, "raw metadata limit"),
+                                                   (1, 1024 * 2**20 + 1, "raw metadata limit"),
                                                    (3, 1, "tag type"), (16, 1, "tag type")])
 def test_tiff_tag_bounds_and_type_are_checked_before_payload_read(monkeypatch, datatype, count, reason):
     class Tag:

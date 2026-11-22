@@ -124,8 +124,8 @@ def add_spot(doc: ImageDocument, name: str, color=None, solidity=None,
     source_order = list(range(index)) + [source_index]
     sources = _source_indices(doc) + [None]
     plane = doc.samples[..., source_index] if source else np.full(doc.samples.shape[:2], doc.maximum, doc.samples.dtype)
-    if (index + 1) * plane.size * plane.dtype.itemsize > 512 * 2**20:
-        raise ValueError("Adding a channel would exceed the 512 MiB decoded-image limit")
+    if (index + 1) * plane.size * plane.dtype.itemsize > 1024 * 2**20:
+        raise ValueError("Adding a channel would exceed the 1024 MiB decoded-image limit")
     return _changed(doc, channels, order, source_order, sources, plane)
 
 

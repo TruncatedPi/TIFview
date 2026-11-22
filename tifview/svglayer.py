@@ -108,7 +108,7 @@ def svg_pixels(doc, artwork, placement):
     return samples, alpha, (y0, x0, y1, x1)
 
 
-def base_stack(doc):
+def base_stack(doc, name="Original image"):
     """Create a base layer only when the source has no Photoshop layer stack."""
     samples = doc.samples[..., :doc.base_count].copy()
     transparency = next((c for c in doc.channels if c.kind == "Transparency"), None)
@@ -118,7 +118,7 @@ def base_stack(doc):
         values = np.divide(samples.astype(np.float64) * doc.maximum, alpha[..., None],
                            out=np.zeros(samples.shape, np.float64), where=alpha[..., None] > 0)
         samples = np.rint(np.clip(values, 0, doc.maximum)).astype(doc.samples.dtype)
-    data = raster_block(doc, samples, alpha, (0, 0, doc.height, doc.width), "Original image")
+    data = raster_block(doc, samples, alpha, (0, 0, doc.height, doc.width), name)
     return LayerStack(data, small_parent(doc))
 
 
@@ -148,9 +148,7 @@ def add_svg_layer(original, doc, artwork, placement, name):
     if original.metadata.get("has_photoshop_layers") or doc.generated_layer_data is not None:
         layerediting.require_unchanged_merged_pixels(original, doc, stack)
     state = doc.layer_state or layerediting.default_state(stack)
-    baseline = layerediting.composite_samples(doc, stack, state)
-    indices, expected = layerediting._protected_pixels(doc, baseline)
-    if any(not np.array_equal(doc.samples[..., index], expected[..., position]) for position, index in enumerate(indices)):
+    if not layerediting.baseline_matches(doc, stack, state):
         raise ValueError("The existing layers do not reproduce the image pixels. Save/reopen a merged copy before adding SVG artwork.")
     samples, alpha, bounds = svg_pixels(doc, artwork, placement)
     single = LayerStack(raster_block(doc, samples, alpha, bounds, name), small_parent(doc))
@@ -160,8 +158,9 @@ def add_svg_layer(original, doc, artwork, placement, name):
     shown = state.visible | ({added_index} if placement.visible else set())
     new_state = layerediting.LayerState((added_index, *state.order), frozenset(shown))
     result, added_alpha = layerediting.recompose_document(doc, new_stack, new_state)
+    canvas = replace(result.canvas, layers_preserved=True) if result.canvas is not None else None
     metadata = dict(result.metadata, has_photoshop_layers=True, byte_order="IBM PC (little endian)")
-    return replace(result, metadata=metadata, generated_layer_data=data), added_alpha
+    return replace(result, metadata=metadata, canvas=canvas, generated_layer_data=data), added_alpha
 
 
 def validated_layer_data(original, edited):
@@ -169,7 +168,7 @@ def validated_layer_data(original, edited):
     stack = edited.layer_stack
     if stack is None or stack.data != edited.generated_layer_data:
         raise ValueError("Generated layer data does not match the edited Photoshop stack")
-    if original.metadata.get("has_photoshop_layers"):
+    if original.metadata.get("has_photoshop_layers") and not edited.metadata.get("layers_flattened"):
         source = LayerStack.from_document(original)
         if edited.canvas is not None:
             from .canvas import layer_bytes

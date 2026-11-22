@@ -214,7 +214,7 @@ def test_svg_absolute_units(value, expected):
 
 
 @pytest.mark.parametrize("body", ['<text>Cut me</text>', '<image href="file:///D:/a.png"/>',
-                                   '<path filter="url(#blur)"/>', '<style>.a{fill:red}</style>',
+                                   '<path filter="url(#blur)"/>', '<style>.a{filter:url(#blur)}</style><rect class="a" width="1" height="1"/>',
                                    '<foreignObject/>', '<use href="#loop" id="loop"/>',
                                    '<path style="vector-effect:non-scaling-stroke"/>'])
 def test_svg_rejects_appearance_it_cannot_reliably_render(body):

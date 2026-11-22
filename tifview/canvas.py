@@ -183,7 +183,13 @@ def expand_document(original, doc, width, height, left=0, top=0, transparent=Tru
             indices, values = layerediting._protected_pixels(result, composed)
             if any(not np.array_equal(samples[..., index], values[..., position])
                    for position, index in enumerate(indices)):
-                raise ValueError("The expanded native composite does not match the original raster layers")
+                if added and layerediting.baseline_matches(doc, source_stack, state):
+                    samples.flags.writeable = True
+                    for position, index in enumerate(indices):
+                        samples[..., index] = values[..., position]
+                    samples.flags.writeable = False
+                else:
+                    raise ValueError("The expanded native composite does not match the original raster layers")
             geometry = replace(geometry, layers_preserved=True)
             metadata["layer_composite_applied"] = True
             result = replace(result, canvas=geometry, layer_stack=stack, layer_state=state,

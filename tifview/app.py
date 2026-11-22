@@ -222,9 +222,9 @@ class Saver(QThread):
     saved = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, original, edited, filename, options, overwrite):
+    def __init__(self, original, edited, filename, options, overwrite, allow_source_change=False):
         super().__init__()
-        self.arguments = original, edited, filename, options, overwrite
+        self.arguments = original, edited, filename, options, overwrite, allow_source_change
 
     def run(self):
         try:
@@ -416,6 +416,10 @@ class SvgSaveDialog(QDialog):
         add.clicked.connect(self.accept)
         add.setEnabled(reason is None)
         add.setDefault(reason is None)
+        if (reason and doc.metadata.get("canvas_layer_reason") and doc.orientation == 1
+                and doc.bits in (8, 16) and doc.color_mode in ("RGB", "CMYK", "Gray", "WhiteIsZero")
+                and "outside" not in reason.lower() and "orientation" not in reason.lower()):
+            buttons.addButton("Flatten old layers & add SVG", QDialogButtonBox.ButtonRole.ActionRole).clicked.connect(lambda: self.done(3))
         buttons.addButton("Save without SVG", QDialogButtonBox.ButtonRole.ActionRole).clicked.connect(lambda: self.done(2))
         layout.addWidget(buttons)
         self.resize(580, 180)
@@ -434,6 +438,9 @@ class TiffSaveDialog(QDialog):
         self.pyramid = QCheckBox("Save image pyramid (rebuild from edited pixels)")
         self.pyramid.setChecked(True)
         layout.addWidget(self.pyramid)
+        self.verify = QCheckBox("Verify saved pixels after writing (slower on large files)")
+        self.verify.setChecked(True)
+        layout.addWidget(self.verify)
         self.layers = QCheckBox("Retain Photoshop layers")
         has_layers = bool(original.metadata.get("has_photoshop_layers") or edited.metadata.get("has_photoshop_layers")
                           or edited.generated_layer_data is not None)
@@ -465,7 +472,8 @@ class TiffSaveDialog(QDialog):
         self.resize(560, 300)
 
     def options(self):
-        return SaveOptions(keep_layers=self.layers.isChecked(), pyramid=self.pyramid.isChecked())
+        return SaveOptions(keep_layers=self.layers.isChecked(), pyramid=self.pyramid.isChecked(),
+                           verify=self.verify.isChecked())
 
 
 class ViewerWindow(QMainWindow):
@@ -481,6 +489,8 @@ class ViewerWindow(QMainWindow):
         self._preview_version = 0
         self._requested_preview = self._displayed_preview = None
         self._pending_preview = None
+        self._pending_save = None
+        self._last_save_request = None
         self._close_after_preview = False
         self._save_after_svg = False
         self.edits: EditSession | None = None
@@ -498,7 +508,7 @@ class ViewerWindow(QMainWindow):
         self.open_action.triggered.connect(self.choose_file)
         toolbar.addAction(self.open_action)
         self.save_action = QAction("Save TIFF copy…", self)
-        self.save_action.setShortcut("Ctrl+Shift+S")
+        self.save_action.setShortcuts([QKeySequence.StandardKey.Save, QKeySequence("Ctrl+Shift+S")])
         self.save_action.triggered.connect(self.choose_save)
         toolbar.addAction(self.save_action)
         self.undo_action = QAction("Undo", self)
@@ -655,6 +665,7 @@ class ViewerWindow(QMainWindow):
         self.layers_panel.selection_changed.connect(self.layer_selection_changed)
         self.layers_panel.visibility_requested.connect(self.layer_visibility_changed)
         self.layers_panel.move_requested.connect(self.move_layer)
+        self.layers_panel.flatten_requested.connect(self.flatten_layers_action)
         self.vectors_panel = VectorsPanel()
         self.tabs.addTab(self.vectors_panel, "Vectors")
         self.vectors_panel.import_requested.connect(self.choose_svg)
@@ -666,6 +677,7 @@ class ViewerWindow(QMainWindow):
         self.vectors_panel.remove_requested.connect(self.remove_svg)
         self.vectors_panel.expand_requested.connect(self.fit_svg_canvas)
         self.vectors_panel.layer_requested.connect(self.choose_svg_layer)
+        self.vectors_panel.flatten_requested.connect(self.flatten_layers_action)
         self.notice = QLabel()
         self.notice.setWordWrap(True)
         self.notice.setStyleSheet("background: #fff0cb; color: #563a00; padding: 8px;")
@@ -737,6 +749,8 @@ class ViewerWindow(QMainWindow):
 
     def accept_document(self, doc: ImageDocument, preview: np.ndarray):
         self._save_after_svg = False
+        self._pending_save = None
+        self._last_save_request = None
         self._last_tiff_copy = None
         self.view.set_svg()
         self.vectors_panel.set_artwork()
@@ -1030,7 +1044,8 @@ class ViewerWindow(QMainWindow):
         self.refresh()
 
     def perform_layer_change(self, operation, *args):
-        if not self.edits or (operation not in ("expand_canvas", "add_svg_layer", "add_drawn_layer") and not self.doc.layer_stack) or self.loader or self.saver or self.layer_busy():
+        no_stack_ops = ("expand_canvas", "add_svg_layer", "add_drawn_layer", "flatten_layers", "flatten_and_add_svg_layer")
+        if not self.edits or (operation not in no_stack_ops and not self.doc.layer_stack) or self.loader or self.saver or self.layer_busy():
             return
         if self.previewer:
             # Finish lazy decoding before asking the backend to use its cache.
@@ -1044,7 +1059,8 @@ class ViewerWindow(QMainWindow):
             self._canvas_overlay = None
             self._save_after_svg = False
             title = ("Could not expand canvas" if operation == "expand_canvas"
-                     else "Could not add layer" if operation in ("add_svg_layer", "add_drawn_layer")
+                     else "Could not add layer" if operation in ("add_svg_layer", "add_drawn_layer", "flatten_and_add_svg_layer")
+                     else "Could not flatten layers" if operation == "flatten_layers"
                      else "Could not change layers")
             QMessageBox.warning(self, title, message)
         self.layer_editor.failed.connect(failed)
@@ -1052,9 +1068,13 @@ class ViewerWindow(QMainWindow):
         self.layer_editor.start()
         self.set_controls()
         msg = ("Expanding canvas without resampling pixels…" if operation == "expand_canvas"
-               else "Adding pixel layer…" if operation in ("add_svg_layer", "add_drawn_layer")
+               else "Adding pixel layer…" if operation in ("add_svg_layer", "add_drawn_layer", "flatten_and_add_svg_layer")
+               else "Flattening layers into single editable base layer…" if operation == "flatten_layers"
                else "Updating layer stack and merged channel pixels…")
         self.statusBar().showMessage(msg)
+
+    def flatten_layers_action(self):
+        self.perform_layer_change("flatten_layers")
 
     def layer_visibility_changed(self, index, visible):
         self.perform_layer_change("set_layer_visibility", index, visible)
@@ -1064,8 +1084,8 @@ class ViewerWindow(QMainWindow):
 
     def layer_edit_finished(self):
         worker, self.layer_editor = self.layer_editor, None
-        added_svg = worker.operation == "add_svg_layer" and worker.succeeded
-        added_draw = worker.operation == "add_drawn_layer" and worker.succeeded
+        added_svg = worker.operation in ("add_svg_layer", "flatten_and_add_svg_layer") and worker.succeeded
+        added_draw = worker.operation in ("add_drawn_layer", "flatten_layers") and worker.succeeded
         worker.deleteLater()
         if added_svg:
             self.remove_svg()
@@ -1315,7 +1335,8 @@ class ViewerWindow(QMainWindow):
         self._displayed_preview = None
         self.setWindowModified(self.edits.dirty or self.vectors_panel.dirty)
         self.rebuild_channels(selected_id)
-        added_layer = self.layer_editor is not None and self.layer_editor.operation in ("add_svg_layer", "add_drawn_layer")
+        added_layer = self.layer_editor is not None and self.layer_editor.operation in (
+            "add_svg_layer", "add_drawn_layer", "flatten_layers", "flatten_and_add_svg_layer")
         self.update_layers_panel(selected=None if added_layer else _KEEP_SELECTION)
         self.update_dimensions()
         self.set_controls()
@@ -1384,7 +1405,8 @@ class ViewerWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Discard
 
     def choose_save(self):
-        if self.edits is None or self.saver is not None or self.loader is not None or self.previewer is not None or self.layer_busy():
+        if (self.edits is None or self.saver is not None or self.loader is not None
+                or self.layer_busy() or self._pending_save is not None):
             return
         if self.vectors_panel.artwork is not None:
             panel = self.vectors_panel
@@ -1401,6 +1423,11 @@ class ViewerWindow(QMainWindow):
                 self._save_after_svg = True
                 self.perform_layer_change("add_svg_layer", panel.artwork, panel.placement, Path(panel.artwork.name).stem)
                 return
+            if response == 3:
+                panel = self.vectors_panel
+                self._save_after_svg = True
+                self.perform_layer_change("flatten_and_add_svg_layer", panel.artwork, panel.placement, Path(panel.artwork.name).stem)
+                return
         dialog = TiffSaveDialog(self.edits.original, self.doc, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1411,16 +1438,23 @@ class ViewerWindow(QMainWindow):
                 filename += ".tif"
             self.save_copy(filename, dialog.options(), overwrite=True)
 
-    def save_copy(self, filename, options=SaveOptions(), overwrite=False):
-        if self.edits is None or self.saver is not None or self.loader is not None or self.previewer is not None or self.layer_busy():
+    def save_copy(self, filename, options=SaveOptions(), overwrite=False, allow_source_change=False):
+        if self.edits is None or self.saver is not None or self.loader is not None or self.layer_busy():
             return
         self.tool_combo.setCurrentIndex(0)
-        self.saver = Saver(self.edits.original, self.doc, filename, options, overwrite)
+        if self.previewer is not None:
+            self.previewer.requestInterruption()
+            self._pending_save = (filename, options, overwrite, allow_source_change)
+            self.set_controls()
+            self.statusBar().showMessage("Finishing preview before saving TIFF copy…")
+            return
+        self._last_save_request = (filename, options, overwrite)
+        self.saver = Saver(self.edits.original, self.doc, filename, options, overwrite, allow_source_change)
         self.saver.saved.connect(self.copy_saved)
         self.saver.failed.connect(self.save_failed)
         self.saver.finished.connect(self.save_finished)
         self.set_controls()
-        self.statusBar().showMessage("Saving and checking TIFF copy…")
+        self.statusBar().showMessage("Saving and checking TIFF copy…" if options.verify else "Saving TIFF copy…")
         self.saver.start()
 
     def copy_saved(self, filename):
@@ -1430,8 +1464,20 @@ class ViewerWindow(QMainWindow):
         self.statusBar().showMessage(f"Saved and verified: {filename} · Original source unchanged")
 
     def save_failed(self, message):
-        QMessageBox.warning(self, "Could not save TIFF copy", message)
         self.statusBar().showMessage("TIFF copy was not saved; edits are still in memory")
+        if (("changed after opening" in message or "changed while saving" in message)
+                and self._last_save_request is not None):
+            answer = QMessageBox.question(
+                self, "Original file changed on disk",
+                message + "\n\nSave your in-memory edits to the new TIFF copy anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                request = self._last_save_request
+                QTimer.singleShot(0, lambda: self.save_copy(*request, allow_source_change=True))
+                return
+        QMessageBox.warning(self, "Could not save TIFF copy", message)
 
     def save_finished(self):
         saver, self.saver = self.saver, None
@@ -1464,6 +1510,12 @@ class ViewerWindow(QMainWindow):
                   if vector_present else None)
         self.svg_layer_action.setEnabled(vector_present and reason is None)
         self.vectors_panel.layer_button.setEnabled(vector_present and reason is None)
+        show_flatten = (vector_present and reason is not None and bool(self.doc.metadata.get("canvas_layer_reason"))
+                        and self.doc.orientation == 1 and self.doc.bits in (8, 16)
+                        and self.doc.color_mode in ("RGB", "CMYK", "Gray", "WhiteIsZero")
+                        and "outside" not in reason.lower() and "orientation" not in reason.lower())
+        self.vectors_panel.flatten_button.setVisible(show_flatten)
+        self.vectors_panel.flatten_button.setEnabled(show_flatten and not busy)
         for control in (self.svg_layer_action, self.vectors_panel.layer_button):
             control.setToolTip(reason or "Render the SVG into a new Photoshop pixel layer")
         editable = self.doc is not None and self.doc.bits in (8, 16) and self.doc.color_mode != "Palette"
@@ -1479,7 +1531,7 @@ class ViewerWindow(QMainWindow):
         self.move_spot_up_action.setEnabled(spot_editable and spot is not None and sequence > 1)
         self.move_spot_down_action.setEnabled(spot_editable and spot is not None and sequence < spot_count)
         self.open_action.setEnabled(not busy and not rendering)
-        self.save_action.setEnabled(editable and not busy and not rendering)
+        self.save_action.setEnabled(editable and not busy and self._pending_save is None)
         for forward, action in ((False, self.undo_action), (True, self.redo_action)):
             history = self.history_target(forward)
             available = history and (history.can_redo if forward else history.can_undo)
@@ -1684,6 +1736,7 @@ class ViewerWindow(QMainWindow):
         worker, self.previewer = self.previewer, None
         worker.deleteLater()
         pending, self._pending_preview = self._pending_preview, None
+        pending_save, self._pending_save = self._pending_save, None
         self.set_controls()
         operation = getattr(self, "_pending_layer_change", None)
         self._pending_layer_change = None
@@ -1692,7 +1745,11 @@ class ViewerWindow(QMainWindow):
             self.close()
         elif operation is not None:
             self._pending_preview = None
+            if pending_save is not None:
+                self._pending_save = pending_save
             self.perform_layer_change(operation[0], *operation[1])
+        elif pending_save is not None:
+            self.save_copy(*pending_save)
         elif pending is not None and pending[0] == self._requested_preview:
             self.start_preview(*pending)
         else:
@@ -1790,7 +1847,7 @@ class ViewerWindow(QMainWindow):
 
     def closeEvent(self, event):
         # A decoder cannot safely be terminated midway through a codec operation.
-        if (self.loader is not None and self.loader.isRunning()) or (self.saver is not None and self.saver.isRunning()) or self.layer_busy():
+        if (self.loader is not None and self.loader.isRunning()) or (self.saver is not None and self.saver.isRunning()) or self.layer_busy() or self._pending_save is not None:
             self.statusBar().showMessage("Please wait for the image read/save to finish before closing.")
             event.ignore()
         elif self.previewer is not None:
@@ -1802,6 +1859,7 @@ class ViewerWindow(QMainWindow):
             event.ignore()
         else:
             self._save_after_svg = False
+            self._pending_save = None
             event.accept()
 
 

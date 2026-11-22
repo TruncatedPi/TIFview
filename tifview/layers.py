@@ -36,9 +36,9 @@ _ADJUSTMENTS = {b"SoCo", b"GdFl", b"PtFl", b"brit", b"levl", b"curv", b"expA",
 _EFFECTS = {b"lrFX", b"lfx2", b"lmfx", b"lfxs"}
 _VECTORS = {b"vmsk", b"vsms", b"vscg", b"vogk", b"vstk"}
 _CACHE_BYTES = 96 * 2**20
-_DECODE_BYTES = 512 * 2**20
-_RAW_BYTES = 512 * 2**20
-_MAX_PIXELS = 40_000_000
+_DECODE_BYTES = 1024 * 2**20
+_RAW_BYTES = 1024 * 2**20
+_MAX_PIXELS = 150_000_000
 _MAX_DIMENSION = 300_000
 
 
@@ -285,7 +285,7 @@ class LayerStack:
 
     def __init__(self, data: bytes, parent: ImageDocument, *, cache_bytes: int = _CACHE_BYTES):
         if len(data) > _RAW_BYTES:
-            raise LayerError("Photoshop layer data exceeds the current 512-MiB raw metadata limit.")
+            raise LayerError("Photoshop layer data exceeds the current 1024-MiB raw metadata limit.")
         self.data, self.parent = bytes(data), parent
         self.cache_limit = max(0, int(cache_bytes))
         self._cache = OrderedDict()
@@ -314,7 +314,7 @@ class LayerStack:
             # This property multiplies the declared count by its datatype size
             # without reading the tag value or allocating its payload.
             if tag.valuebytecount > _RAW_BYTES:
-                raise LayerError("Photoshop layer data exceeds the current 512-MiB raw metadata limit.")
+                raise LayerError("Photoshop layer data exceeds the current 1024-MiB raw metadata limit.")
             data = tag.value
         if expected is not None and file_signature(document.path) != expected:
             raise LayerError("The source changed while reading Photoshop layers. Reopen it.")
@@ -536,7 +536,7 @@ class LayerStack:
         byte_count = layer.height * layer.width * (base_count + 1) * (bits // 8)
         if (max(layer.height, layer.width) > _MAX_DIMENSION
                 or layer.height * layer.width > _MAX_PIXELS or byte_count > _DECODE_BYTES):
-            raise LayerError("This layer exceeds the current 40-million-pixel / 512-MiB decoded limit.")
+            raise LayerError("This layer exceeds the current 150-million-pixel / 1024-MiB decoded limit.")
         if layer.vector is None and not all(channel in layer.channel_ids for channel in range(base_count)) and layer.has_pixels:
             raise UnsupportedLayerError("This layer does not contain every process-channel pixel plane.")
         maximum = (1 << bits) - 1
@@ -665,7 +665,7 @@ class LayerStack:
                 if pixels is None:
                     pixels = self.decode_layer(index)
                     if decoded_bytes + pixels.nbytes > _DECODE_BYTES:
-                        raise LayerError("The visible layer stack exceeds the 512-MiB decoded-memory limit.")
+                        raise LayerError("The visible layer stack exceeds the 1024-MiB decoded-memory limit.")
                     decoded_layers[index] = pixels
                     decoded_bytes += pixels.nbytes
                 source_alpha = self._effective_alpha(layer, pixels, by[iy], xs[ix], raw_preview=raw_preview)

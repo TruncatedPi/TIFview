@@ -86,14 +86,14 @@ def _channels(mode: str, count: int, extra_types: list[int], resources: bytes | 
     return channels
 
 
-_MAX_PIXELS = 40_000_000
-_MAX_DECODED_BYTES = 512 * 2**20
+_MAX_PIXELS = 150_000_000
+_MAX_DECODED_BYTES = 1024 * 2**20
 
 
 def _check_image_limits(pixels: int, decoded_bytes: int = 0):
     if pixels > _MAX_PIXELS or decoded_bytes > _MAX_DECODED_BYTES:
         raise UnsupportedImageError(
-            "Image exceeds the 40-million-pixel or 512 MiB decoded limit.")
+            "Image exceeds the 150-million-pixel or 1024 MiB decoded limit.")
 
 
 def _load_tiff(path: Path) -> ImageDocument:
