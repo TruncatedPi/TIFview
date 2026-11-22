@@ -9,10 +9,14 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QPointF, QRectF
-from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap, QKeySequence, QTransform
+from PySide6.QtGui import (
+    QAction, QActionGroup, QColor, QFont, QFontDatabase, QIcon, QImage,
+    QPainter, QPainterPath, QPalette, QPen, QPixmap, QKeySequence, QTransform,
+)
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox,
-    QFileDialog, QFontComboBox, QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QHBoxLayout, QInputDialog,
+    QFileDialog, QFontComboBox, QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsRectItem,
+    QGraphicsScene, QGraphicsView, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton, QSlider, QSplitter, QTextEdit,
     QSpinBox, QTabWidget, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
@@ -41,6 +45,7 @@ class ImageView(QGraphicsView):
     zoom_changed = Signal(float)
     pixel_hovered = Signal(int, int)
     draw_requested = Signal(str, object, object)
+    svg_moved = Signal(float, float)
 
     def __init__(self):
         super().__init__()
@@ -48,7 +53,7 @@ class ImageView(QGraphicsView):
         self.image_item = QGraphicsPixmapItem()
         self.image_item.setTransformationMode(Qt.TransformationMode.FastTransformation)
         self.scene().addItem(self.image_item)
-        self.setBackgroundBrush(QColor("#34383d"))
+        self.setBackgroundBrush(QColor("#1e1e1e"))
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
@@ -61,12 +66,36 @@ class ImageView(QGraphicsView):
         self.drawing_enabled = True
         self._drawing_start = None
         self._pan_position = None
+        self._space_pan = False
+        self._svg_dpi = None
+        self._svg_drag_start = None
+        self._svg_drag_base_transform = None
         self.preview_item = QGraphicsPathItem()
         self.preview_item.setZValue(1)
         self.scene().addItem(self.preview_item)
         self.svg_item = None
+        self.svg_outline = QGraphicsRectItem()
+        self.svg_outline.setZValue(3)
+        self.svg_outline.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        outline_pen = QPen(QColor("#38bdf8"), 1.5, Qt.PenStyle.DashLine)
+        outline_pen.setCosmetic(True)
+        self.svg_outline.setPen(outline_pen)
+        self.svg_outline.setBrush(Qt.BrushStyle.NoBrush)
+        self.svg_outline.hide()
+        self.scene().addItem(self.svg_outline)
+
+    def update_svg_outline(self):
+        if self.svg_item is not None and self.svg_item.isVisible():
+            self.svg_outline.setRect(self.svg_item.boundingRect())
+            self.svg_outline.setTransform(self.svg_item.transform())
+            self.svg_outline.setVisible(True)
+        else:
+            self.svg_outline.setVisible(False)
 
     def set_svg(self, artwork=None, placement=None, dpi=None):
+        self._svg_drag_start = None
+        self._svg_drag_base_transform = None
+        self._svg_dpi = dpi
         if self.svg_item is not None:
             self.scene().removeItem(self.svg_item)
             self.svg_item = None
@@ -74,20 +103,58 @@ class ImageView(QGraphicsView):
             self.svg_item = SvgItem(artwork)
             self.scene().addItem(self.svg_item)
             self.svg_item.place(placement, dpi)
+        self.update_svg_outline()
 
     def set_tool(self, tool):
         self.tool = tool
         self._drawing_start = None
+        self._svg_drag_start = None
         self.preview_item.setPath(QPainterPath())
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag if tool == "Pan" else QGraphicsView.DragMode.NoDrag)
-        self.viewport().setCursor(Qt.CursorShape.ArrowCursor if tool == "Pan" else Qt.CursorShape.CrossCursor)
+        if self._space_pan or tool == "Pan":
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.viewport().setCursor(Qt.CursorShape.OpenHandCursor if self._space_pan else Qt.CursorShape.ArrowCursor)
+        else:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.viewport().setCursor(Qt.CursorShape.CrossCursor)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat() and self.tool != "Pan":
+            self._space_pan = True
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat() and self._space_pan:
+            self._space_pan = False
+            self.set_tool(self.tool)
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
+
+    def focusOutEvent(self, event):
+        if self._space_pan:
+            self._space_pan = False
+            self.set_tool(self.tool)
+        super().focusOutEvent(event)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
             self._pan_position = event.position().toPoint()
             event.accept()
             return
-        if self.tool != "Pan" and event.button() == Qt.MouseButton.LeftButton:
+        if (self.tool == "Pan" and not self._space_pan and event.button() == Qt.MouseButton.LeftButton
+                and self.svg_item is not None and self.svg_item.isVisible() and self._svg_dpi is not None):
+            point = self.mapToScene(event.position().toPoint())
+            if self.svg_item.sceneBoundingRect().contains(point):
+                self._svg_drag_start = point
+                self._svg_drag_base_transform = QTransform(self.svg_item.transform())
+                self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+                event.accept()
+                return
+        if self.tool != "Pan" and not self._space_pan and event.button() == Qt.MouseButton.LeftButton:
             if not self.drawing_enabled:
                 event.accept()
                 return
@@ -106,6 +173,20 @@ class ImageView(QGraphicsView):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
             self._pan_position = None
+            event.accept()
+            return
+        if self._svg_drag_start is not None and event.button() == Qt.MouseButton.LeftButton:
+            delta = self.mapToScene(event.position().toPoint()) - self._svg_drag_start
+            base_transform = self._svg_drag_base_transform
+            self._svg_drag_start = None
+            self._svg_drag_base_transform = None
+            self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+            if base_transform is not None and self.svg_item is not None:
+                self.svg_item.setTransform(base_transform)
+                self.update_svg_outline()
+            if self._svg_dpi is not None and (abs(delta.x()) > 1e-6 or abs(delta.y()) > 1e-6):
+                self.svg_moved.emit(delta.x() * 25.4 / self._svg_dpi[0],
+                                    delta.y() * 25.4 / self._svg_dpi[1])
             event.accept()
             return
         if self._drawing_start is not None and event.button() == Qt.MouseButton.LeftButton:
@@ -178,6 +259,13 @@ class ImageView(QGraphicsView):
             self._pan_position = position
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            event.accept()
+            return
+        if self._svg_drag_start is not None and self.svg_item is not None and self._svg_drag_base_transform is not None:
+            delta = point - self._svg_drag_start
+            moved = self._svg_drag_base_transform * QTransform.fromTranslate(delta.x(), delta.y())
+            self.svg_item.setTransform(moved)
+            self.svg_outline.setTransform(moved)
             event.accept()
             return
         if self._drawing_start is not None:
@@ -491,54 +579,105 @@ class ViewerWindow(QMainWindow):
         self._pending_preview = None
         self._pending_save = None
         self._last_save_request = None
+        self._layer_thumbnail_cache = {}
         self._close_after_preview = False
         self._save_after_svg = False
         self.edits: EditSession | None = None
         self.colors: dict[int, tuple[int, int, int]] = {}
         self._channel_preferences = {}
         self.setWindowTitle(f"TIFview {__version__} — channel and layer viewer")
-        self.resize(1200, 800)
+        self.resize(1280, 820)
         self.setMinimumSize(820, 540)
         self.setAcceptDrops(True)
-        toolbar = QToolBar("Viewer")
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
+
         self.open_action = QAction("Open…", self)
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
         self.open_action.triggered.connect(self.choose_file)
-        toolbar.addAction(self.open_action)
         self.save_action = QAction("Save TIFF copy…", self)
         self.save_action.setShortcuts([QKeySequence.StandardKey.Save, QKeySequence("Ctrl+Shift+S")])
         self.save_action.triggered.connect(self.choose_save)
-        toolbar.addAction(self.save_action)
         self.undo_action = QAction("Undo", self)
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.triggered.connect(self.undo)
-        toolbar.addAction(self.undo_action)
         self.redo_action = QAction("Redo", self)
         self.redo_action.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
         self.redo_action.triggered.connect(self.redo)
-        toolbar.addAction(self.redo_action)
+        self.fit_action = QAction("Fit", self)
+        self.fit_action.setShortcuts([QKeySequence("F"), QKeySequence("Ctrl+0")])
+        self.fit_action.triggered.connect(self.fit)
+        self.actual_action = QAction("100%", self)
+        self.actual_action.setShortcuts([QKeySequence("1"), QKeySequence("Ctrl+1")])
+        self.actual_action.triggered.connect(self.actual)
+        self.zoom_out_action = QAction("−", self)
+        self.zoom_out_action.setShortcuts([QKeySequence("-"), QKeySequence("Ctrl+-")])
+        self.zoom_out_action.triggered.connect(lambda: self.view.zoom_by(1 / 1.25))
+        self.zoom_in_action = QAction("+", self)
+        self.zoom_in_action.setShortcuts([QKeySequence("+"), QKeySequence("="), QKeySequence("Ctrl++"), QKeySequence("Ctrl+=")])
+        self.zoom_in_action.triggered.connect(lambda: self.view.zoom_by(1.25))
+        self.metadata_action = QAction("File details…", self)
+        self.metadata_action.triggered.connect(self.show_details)
+        self.metadata_action.setEnabled(False)
+        self.canvas_size_action = QAction("Canvas size…", self)
+        self.canvas_size_action.setShortcut(QKeySequence("Ctrl+Alt+C"))
+        self.canvas_size_action.triggered.connect(self.choose_canvas_size)
+
+        toolbar = QToolBar("Viewer")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+        for item in (self.open_action, self.save_action, self.undo_action, self.redo_action):
+            toolbar.addAction(item)
         toolbar.addSeparator()
-        for label, shortcut, callback in [
-            ("Fit", "F", self.fit), ("100%", "1", self.actual),
-            ("−", "-", lambda: self.view.zoom_by(1 / 1.25)),
-            ("+", "+", lambda: self.view.zoom_by(1.25)),
-        ]:
-            action = QAction(label, self)
-            action.setShortcut(shortcut)
-            action.triggered.connect(callback)
-            toolbar.addAction(action)
+        for item in (self.fit_action, self.actual_action, self.zoom_out_action, self.zoom_in_action):
+            toolbar.addAction(item)
         self.zoom_label = QLabel(" 100% ")
         toolbar.addWidget(self.zoom_label)
         toolbar.addSeparator()
-        self.metadata_action = QAction("File details", self)
-        self.metadata_action.triggered.connect(self.show_details)
-        self.metadata_action.setEnabled(False)
         toolbar.addAction(self.metadata_action)
-        self.canvas_size_action = QAction("Canvas size…", self)
-        self.canvas_size_action.triggered.connect(self.choose_canvas_size)
         toolbar.addAction(self.canvas_size_action)
+
+        file_menu = self.menuBar().addMenu("File")
+        file_menu.addAction(self.open_action)
+        file_menu.addAction(self.save_action)
+        file_menu.addSeparator()
+        self.import_svg_action = QAction("Import SVG…", self)
+        self.import_svg_action.setShortcut(QKeySequence("Ctrl+I"))
+        self.import_svg_action.triggered.connect(self.choose_svg)
+        file_menu.addAction(self.import_svg_action)
+        self.load_job_action = QAction("Open alignment job…", self)
+        self.load_job_action.triggered.connect(self.choose_alignment_job)
+        file_menu.addAction(self.load_job_action)
+        self.save_job_action = QAction("Save alignment job…", self)
+        self.save_job_action.triggered.connect(self.choose_save_job)
+        file_menu.addAction(self.save_job_action)
+        self.export_svg_action = QAction("Export aligned SVG…", self)
+        self.export_svg_action.triggered.connect(self.choose_export_svg)
+        file_menu.addAction(self.export_svg_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.metadata_action)
+        file_menu.addSeparator()
+        exit_action = file_menu.addAction("Exit", self.close)
+        exit_action.setShortcut(QKeySequence("Ctrl+Q"))
+
+        edit_menu = self.menuBar().addMenu("Edit")
+        edit_menu.addAction(self.undo_action)
+        edit_menu.addAction(self.redo_action)
+
+        image_menu = self.menuBar().addMenu("Image")
+        image_menu.addAction(self.canvas_size_action)
+        self.fit_svg_canvas_action = image_menu.addAction("Expand canvas to SVG…", self.fit_svg_canvas)
+
+        layer_menu = self.menuBar().addMenu("Layer")
+        self.import_svg_layer_action = layer_menu.addAction("Import SVG as layer…", self.choose_svg)
+        self.svg_layer_action = QAction("Add SVG as layer…", self)
+        self.svg_layer_action.triggered.connect(self.choose_svg_layer)
+        layer_menu.addAction(self.svg_layer_action)
+        self.flatten_action = layer_menu.addAction("Flatten to single layer", self.flatten_layers_action)
+        layer_menu.addSeparator()
+        self.move_layer_up_action = layer_menu.addAction("Move layer up", self.move_selected_layer_up)
+        self.move_layer_up_action.setShortcut(QKeySequence("Ctrl+]"))
+        self.move_layer_down_action = layer_menu.addAction("Move layer down", self.move_selected_layer_down)
+        self.move_layer_down_action.setShortcut(QKeySequence("Ctrl+["))
+        self.show_composite_action = layer_menu.addAction("Show full layer stack", self.show_layer_composite)
 
         self.spot_menu = self.menuBar().addMenu("Spots")
         self.new_spot_action = self.spot_menu.addAction("New spot…", self.new_spot)
@@ -549,13 +688,48 @@ class ViewerWindow(QMainWindow):
         self.move_spot_down_action = self.spot_menu.addAction("Move spot down", lambda: self.move_spot(1))
         self.spot_menu.addSeparator()
         self.delete_spot_action = self.spot_menu.addAction("Delete spot…", self.delete_spot)
+
         vector_menu = self.menuBar().addMenu("Vectors")
-        self.import_svg_action = vector_menu.addAction("Import SVG…", self.choose_svg)
-        self.svg_layer_action = vector_menu.addAction("Add SVG as layer…", self.choose_svg_layer)
-        self.load_job_action = vector_menu.addAction("Open alignment job…", self.choose_alignment_job)
-        self.save_job_action = vector_menu.addAction("Save alignment job…", self.choose_save_job)
-        self.export_svg_action = vector_menu.addAction("Export aligned SVG…", self.choose_export_svg)
+        vector_menu.addAction(self.import_svg_action)
+        vector_menu.addAction(self.svg_layer_action)
+        vector_menu.addAction(self.fit_svg_canvas_action)
+        vector_menu.addAction(self.load_job_action)
+        vector_menu.addAction(self.save_job_action)
+        vector_menu.addAction(self.export_svg_action)
+        vector_menu.addSeparator()
+        self.remove_svg_action = vector_menu.addAction("Remove SVG", self.remove_svg)
+
+        view_menu = self.menuBar().addMenu("View")
+        view_menu.addAction(self.fit_action)
+        view_menu.addAction(self.actual_action)
+        view_menu.addAction(self.zoom_in_action)
+        view_menu.addAction(self.zoom_out_action)
+
         self.menuBar().addMenu("Help").addAction("About TIFview…", self.show_about)
+
+        self.tool_strip = QToolBar("Tools")
+        self.tool_strip.setMovable(False)
+        self.tool_strip.setOrientation(Qt.Orientation.Vertical)
+        self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self.tool_strip)
+        self.tool_actions = QActionGroup(self)
+        self.tool_actions.setExclusive(True)
+        self.tool_action_map = {}
+        for tool_name, label, tip in (
+            ("Pan", "Move", "Hand / Move tool (pan canvas or drag SVG overlay; Spacebar pans while drawing)"),
+            ("Box", "Box", "Rectangle tool"),
+            ("Ellipse", "Ellipse", "Ellipse / Circle tool"),
+            ("Line", "Line", "Line tool"),
+            ("Text", "Text", "Text tool"),
+        ):
+            act = QAction(label, self)
+            act.setCheckable(True)
+            act.setToolTip(tip)
+            if tool_name == "Pan":
+                act.setChecked(True)
+            act.triggered.connect(lambda _checked=False, name=tool_name: self.tool_combo.setCurrentText(name))
+            self.tool_actions.addAction(act)
+            self.tool_strip.addAction(act)
+            self.tool_action_map[tool_name] = act
 
         self.edit_toolbar = QToolBar("Pixel edits")
         self.edit_toolbar.setMovable(False)
@@ -665,7 +839,9 @@ class ViewerWindow(QMainWindow):
         self.layers_panel.selection_changed.connect(self.layer_selection_changed)
         self.layers_panel.visibility_requested.connect(self.layer_visibility_changed)
         self.layers_panel.move_requested.connect(self.move_layer)
+        self.layers_panel.reorder_requested.connect(self.move_layer_to)
         self.layers_panel.flatten_requested.connect(self.flatten_layers_action)
+        self.layers_panel.import_svg_requested.connect(self.choose_svg)
         self.vectors_panel = VectorsPanel()
         self.tabs.addTab(self.vectors_panel, "Vectors")
         self.vectors_panel.import_requested.connect(self.choose_svg)
@@ -676,21 +852,24 @@ class ViewerWindow(QMainWindow):
         self.vectors_panel.placement_edited.connect(self.vector_edit_made)
         self.vectors_panel.remove_requested.connect(self.remove_svg)
         self.vectors_panel.expand_requested.connect(self.fit_svg_canvas)
+        self.vectors_panel.center_requested.connect(self.center_svg_on_canvas)
+        self.vectors_panel.fit_inside_requested.connect(self.fit_svg_inside_canvas)
         self.vectors_panel.layer_requested.connect(self.choose_svg_layer)
         self.vectors_panel.flatten_requested.connect(self.flatten_layers_action)
         self.notice = QLabel()
         self.notice.setWordWrap(True)
-        self.notice.setStyleSheet("background: #fff0cb; color: #563a00; padding: 8px;")
+        self.notice.setStyleSheet("background: #4a3810; color: #fde68a; border: 1px solid #855e14; padding: 8px; border-radius: 3px;")
         self.notice.hide()
         layout.addWidget(self.notice)
         self.view = ImageView()
         self.view.zoom_changed.connect(self.zoom_updated)
         self.view.pixel_hovered.connect(self.inspect_pixel)
         self.view.draw_requested.connect(self.apply_drawing)
+        self.view.svg_moved.connect(self.vectors_panel.move_by)
         self.splitter = QSplitter()
-        self.splitter.addWidget(sidebar)
         self.splitter.addWidget(self.view)
-        self.splitter.setSizes([330, 870])
+        self.splitter.addWidget(sidebar)
+        self.splitter.setSizes([920, 360])
         self.setCentralWidget(self.splitter)
         self.version_label = QLabel(f"TIFview {__version__}")
         self.version_label.setToolTip(f"Running from: {self.application_location()}")
@@ -752,6 +931,8 @@ class ViewerWindow(QMainWindow):
         self._pending_save = None
         self._last_save_request = None
         self._last_tiff_copy = None
+        self._layer_thumbnail_cache.clear()
+        self.layers_panel.set_thumbnails({})
         self.view.set_svg()
         self.vectors_panel.set_artwork()
         self.doc = doc
@@ -785,20 +966,25 @@ class ViewerWindow(QMainWindow):
         self.overlays.blockSignals(False)
         self.metadata_action.setEnabled(True)
         messages = list(doc.warnings)
+        actionable = (
+            any(c.kind == "Unknown" for c in doc.channels)
+            or bool(doc.metadata.get("independent_page_count"))
+            or any(any(word in w.lower() for word in (
+                "unavailable", "could not", "withheld", "conflicting", "invalid", "truncated", "unknown"
+            )) for w in messages)
+        )
         if any(c.kind == "Unknown" for c in doc.channels):
             messages.insert(0, "Some extra samples have unknown types. File details explains the evidence.")
         summary = []
-        if doc.photoshop_resources:
-            summary.append("Photoshop channel interpretation is experimental.")
         if any(c.kind == "Unknown" for c in doc.channels):
             summary.append("Some channel types are unknown.")
-        if doc.metadata.get("has_photoshop_layers"):
-            summary.append("Photoshop layers available in the Layers tab.")
-        if messages:
+        if doc.metadata.get("independent_page_count"):
+            summary.append(f"{doc.metadata['independent_page_count']} additional TIFF page(s) cannot be saved safely.")
+        if actionable:
             summary.append("See File details for reading and colour notes.")
         self.notice.setText("\n".join(summary))
         self.notice.setToolTip("\n\n".join(messages))
-        self.notice.setVisible(bool(messages))
+        self.notice.setVisible(actionable)
         self.set_controls()
         self.statusBar().showMessage("Source untouched · Wheel: zoom · Drag: pan · F: fit · 1: actual pixels")
         if preview is None:
@@ -824,6 +1010,10 @@ class ViewerWindow(QMainWindow):
             self.update_draw_color_button()
 
     def change_tool(self, tool):
+        if tool in self.tool_action_map:
+            self.tool_actions.blockSignals(True)
+            self.tool_action_map[tool].setChecked(True)
+            self.tool_actions.blockSignals(False)
         self.view.set_tool(tool)
         if tool != "Pan":
             self.style_combo.setCurrentIndex(0)
@@ -890,9 +1080,49 @@ class ViewerWindow(QMainWindow):
         if panel.artwork is not None:
             self.offer_svg_canvas(panel.artwork, panel.placement)
 
+    def _svg_placed_rect_mm(self, artwork, placement):
+        rect = artwork.full_rect(placement.width_mm, placement.height_mm)
+        return QTransform().rotate(placement.angle).mapRect(rect)
+
+    def center_svg_on_canvas(self):
+        panel = self.vectors_panel
+        if not self.doc or panel.artwork is None or panel.placement is None:
+            return
+        dx, dy = self.doc.metadata["dpi"]
+        cw, ch = self.doc.width * 25.4 / dx, self.doc.height * 25.4 / dy
+        bounds = self._svg_placed_rect_mm(panel.artwork, panel.placement)
+        panel.set_placement(replace(
+            panel.placement,
+            x_mm=cw / 2 - bounds.center().x(),
+            y_mm=ch / 2 - bounds.center().y(),
+        ))
+
+    def fit_svg_inside_canvas(self):
+        panel = self.vectors_panel
+        if not self.doc or panel.artwork is None or panel.placement is None:
+            return
+        dx, dy = self.doc.metadata["dpi"]
+        cw, ch = self.doc.width * 25.4 / dx, self.doc.height * 25.4 / dy
+        probe = replace(panel.placement, width_mm=panel.artwork.width_mm, height_mm=panel.artwork.height_mm)
+        natural = self._svg_placed_rect_mm(panel.artwork, probe)
+        if natural.width() <= 0 or natural.height() <= 0:
+            return
+        scale = min(cw / natural.width(), ch / natural.height())
+        if not math.isfinite(scale) or scale <= 0:
+            return
+        scaled = replace(panel.placement, width_mm=panel.artwork.width_mm * scale,
+                         height_mm=panel.artwork.height_mm * scale)
+        bounds = self._svg_placed_rect_mm(panel.artwork, scaled)
+        panel.set_placement(replace(
+            scaled,
+            x_mm=cw / 2 - bounds.center().x(),
+            y_mm=ch / 2 - bounds.center().y(),
+        ))
+
     def svg_placement_changed(self, placement):
         if self.view.svg_item is not None:
             self.view.svg_item.place(placement, self.doc.metadata["dpi"])
+            self.view.update_svg_outline()
             self.setWindowModified(bool(self.edits and self.edits.dirty) or self.vectors_panel.dirty)
             self.set_controls()
 
@@ -1026,6 +1256,41 @@ class ViewerWindow(QMainWindow):
         self.set_controls()
         self.refresh()
 
+    def _layer_thumbnail(self, stack, layer) -> QIcon | None:
+        key = (id(stack), layer.index)
+        if key in self._layer_thumbnail_cache:
+            return self._layer_thumbnail_cache[key]
+        if not layer.has_pixels or layer.width * layer.height > 4_000_000 or len(layer.issues) > 0:
+            return None
+        try:
+            pixels = stack.decode_layer(layer.index)
+        except Exception:
+            return None
+        h, w = pixels.samples.shape[:2]
+        if h <= 0 or w <= 0:
+            return None
+        sy, sx = max(1, h // 22), max(1, w // 32)
+        s = pixels.samples[::sy, ::sx].astype(np.float32) / ((1 << stack.bits) - 1)
+        a = pixels.alpha[::sy, ::sx].astype(np.float32) / ((1 << stack.bits) - 1)
+        mode = self.doc.color_mode
+        if mode == "RGB":
+            rgb = s[..., :3]
+        elif mode == "CMYK":
+            rgb = (1 - s[..., :3]) * (1 - s[..., 3:4])
+        elif mode == "WhiteIsZero":
+            rgb = np.repeat(1 - s[..., :1], 3, axis=2)
+        else:
+            rgb = np.repeat(s[..., :1], 3, axis=2)
+        sh, sw = rgb.shape[:2]
+        yy, xx = np.ogrid[:sh, :sw]
+        checker = np.where((xx // 4 + yy // 4) % 2, np.float32(0.38), np.float32(0.50))[..., None]
+        comp = np.rint(np.clip(rgb * a[..., None] + checker * (1 - a[..., None]), 0, 1) * 255).astype(np.uint8)
+        comp = np.ascontiguousarray(comp)
+        img = QImage(comp.data, sw, sh, comp.strides[0], QImage.Format.Format_RGB888).copy()
+        icon = QIcon(QPixmap.fromImage(img).scaled(32, 22, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        self._layer_thumbnail_cache[key] = icon
+        return icon
+
     def update_layers_panel(self, selected=_KEEP_SELECTION):
         if self.doc and self.doc.layer_stack is None and not self.doc.metadata.get("canvas_layer_reason"):
             self.layers_panel.set_layers(None)
@@ -1037,6 +1302,12 @@ class ViewerWindow(QMainWindow):
             return
         if self.doc and self.doc.layer_stack:
             state = self.doc.layer_state
+            icons = {}
+            for layer in self.doc.layer_stack.layers:
+                icon = self._layer_thumbnail(self.doc.layer_stack, layer)
+                if icon is not None:
+                    icons[layer.index] = icon
+            self.layers_panel._thumbnails = icons
             self.layers_panel.set_layers(self.doc.layer_stack, state.order, state.visible, selected=selected)
 
     def layer_selection_changed(self, *_):
@@ -1081,6 +1352,22 @@ class ViewerWindow(QMainWindow):
 
     def move_layer(self, index, delta):
         self.perform_layer_change("move_layer", index, delta)
+
+    def move_layer_to(self, index, target_position):
+        self.perform_layer_change("move_layer_to", index, target_position)
+
+    def move_selected_layer_up(self):
+        idx = self.layers_panel.selected_index()
+        if idx is not None:
+            self.move_layer(idx, -1)
+
+    def move_selected_layer_down(self):
+        idx = self.layers_panel.selected_index()
+        if idx is not None:
+            self.move_layer(idx, 1)
+
+    def show_layer_composite(self):
+        self.layers_panel.tree.setCurrentItem(self.layers_panel.tree.topLevelItem(0))
 
     def layer_edit_finished(self):
         worker, self.layer_editor = self.layer_editor, None
@@ -1502,10 +1789,14 @@ class ViewerWindow(QMainWindow):
         else:
             self.vectors_panel.calibration.setText("SVG alignment needs an image with calibrated print resolution (DPI).")
         self.import_svg_action.setEnabled(vector_enabled)
+        self.import_svg_layer_action.setEnabled(vector_enabled)
+        self.layers_panel.import_svg_button.setEnabled(vector_enabled)
         self.load_job_action.setEnabled(vector_enabled)
         vector_present = vector_enabled and self.vectors_panel.artwork is not None
         self.save_job_action.setEnabled(vector_present)
         self.export_svg_action.setEnabled(vector_present)
+        self.fit_svg_canvas_action.setEnabled(vector_present)
+        self.remove_svg_action.setEnabled(vector_present)
         reason = (svg_layer_reason(self.doc, self.vectors_panel.artwork, self.vectors_panel.placement)
                   if vector_present else None)
         self.svg_layer_action.setEnabled(vector_present and reason is None)
@@ -1543,6 +1834,8 @@ class ViewerWindow(QMainWindow):
                                  and (self.doc and self.doc.orientation == 1))
         can_draw = channel_drawing_allowed or layer_drawing_allowed
         self.edit_toolbar.setEnabled(can_draw)
+        for tool_name, act in self.tool_action_map.items():
+            act.setEnabled(tool_name == "Pan" or can_draw)
         self.channels.setEnabled(self.loader is None)
         self.view.drawing_enabled = can_draw
 
@@ -1577,6 +1870,10 @@ class ViewerWindow(QMainWindow):
                     self.layers_panel.notice.setText("Showing saved TIFF composite. Layer-stack rendering unavailable: " + note)
         if self.doc and self.doc.metadata.get("canvas_layer_reason"):
             self.layers_panel.set_edit_reason(self.doc.metadata["canvas_layer_reason"] + ". Undo canvas expansion to inspect original layers.")
+        self.flatten_action.setEnabled(self.layers_panel.flatten_button.isEnabled())
+        self.move_layer_up_action.setEnabled(self.layers_panel.up_button.isEnabled())
+        self.move_layer_down_action.setEnabled(self.layers_panel.down_button.isEnabled())
+        self.show_composite_action.setEnabled(bool(self.doc and self.doc.layer_stack and not busy))
         if not can_draw:
             self.tool_combo.setCurrentIndex(0)
             self.view.set_tool("Pan")
@@ -1632,7 +1929,7 @@ class ViewerWindow(QMainWindow):
             return (self._preview_version, 1, "canvas-composite"), dict(selected=None,
                     visible={c.index for c in self.doc.channels if c.index < self.doc.base_count or c.kind == "Transparency"})
         if self.layer_mode() and self.doc.layer_stack:
-            index = self.layers_panel.selected_index()
+            index = self.layers_panel.selected_index() if self.layers_panel.isolate_checkbox.isChecked() else None
             stride = self.layer_preview_stride()
             state = self.doc.layer_state
             return (self._preview_version, stride, "layer", index, state), {"layer": index}
@@ -1867,6 +2164,23 @@ def configure_application(app: QApplication):
     app.setApplicationName("TIFview")
     app.setApplicationVersion(__version__)
     app.setStyle("Fusion")
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor("#2b2b2b"))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor("#e8e8e8"))
+    palette.setColor(QPalette.ColorRole.Base, QColor("#232323"))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#2f2f2f"))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#383838"))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#f0f0f0"))
+    palette.setColor(QPalette.ColorRole.Text, QColor("#e8e8e8"))
+    palette.setColor(QPalette.ColorRole.Button, QColor("#383838"))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#e8e8e8"))
+    palette.setColor(QPalette.ColorRole.BrightText, QColor("#ffffff"))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("#3d7cc9"))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor("#7a7a7a"))
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor("#7a7a7a"))
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor("#7a7a7a"))
+    app.setPalette(palette)
     # The offscreen Qt platform on Windows has no system font discovery.
     # Loading a real font also makes reproducible UI previews readable.
     font_path = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts/segoeui.ttf"
@@ -1875,8 +2189,28 @@ def configure_application(app: QApplication):
         families = QFontDatabase.applicationFontFamilies(font_id)
         if families:
             app.setFont(QFont(families[0], 10))
-    app.setStyleSheet("QWidget { font-size: 12px; } QToolBar { spacing: 6px; padding: 5px; } "
-                      "QTreeWidget::item { padding: 2px 0px; }")
+    app.setStyleSheet(
+        "QWidget { font-size: 12px; color: #e8e8e8; }"
+        "QMainWindow, QDialog { background: #2b2b2b; }"
+        "QMenuBar { background: #252525; border-bottom: 1px solid #3c3c3c; }"
+        "QMenuBar::item:selected, QMenu::item:selected { background: #3d7cc9; color: #ffffff; }"
+        "QMenu { background: #2d2d2d; border: 1px solid #454545; }"
+        "QToolBar { background: #323232; border: 1px solid #424242; spacing: 5px; padding: 4px; }"
+        "QToolButton { background: transparent; border: 1px solid transparent; border-radius: 3px; padding: 4px 7px; }"
+        "QToolButton:hover { background: #464646; border-color: #555555; }"
+        "QToolButton:checked { background: #3d7cc9; border-color: #5a96df; color: #ffffff; }"
+        "QToolButton:disabled { color: #7a7a7a; }"
+        "QTabWidget::pane { border: 1px solid #454545; top: -1px; background: #2b2b2b; }"
+        "QTabBar::tab { background: #343434; border: 1px solid #454545; padding: 5px 11px; margin-right: 2px; }"
+        "QTabBar::tab:selected { background: #2b2b2b; border-bottom-color: #2b2b2b; color: #ffffff; font-weight: 600; }"
+        "QTreeWidget, QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit {"
+        "  background: #232323; border: 1px solid #454545; border-radius: 3px; padding: 2px 4px; }"
+        "QHeaderView::section { background: #333333; border: 1px solid #454545; padding: 3px 6px; }"
+        "QPushButton { background: #3b3b3b; border: 1px solid #525252; border-radius: 3px; padding: 4px 10px; }"
+        "QPushButton:hover { background: #484848; }"
+        "QPushButton:disabled { background: #2e2e2e; color: #7a7a7a; border-color: #3a3a3a; }"
+        "QTreeWidget::item { padding: 3px 2px; }"
+    )
 
 
 def launch(path: str | None = None) -> int:

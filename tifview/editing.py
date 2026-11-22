@@ -537,6 +537,22 @@ class EditSession:
         self._layer_change(layerediting.LayerState(tuple(order), state.visible))
         return index
 
+    def move_layer_to(self, index: int, target_position: int) -> int:
+        state = self.document.layer_state
+        if state is None or not isinstance(index, int) or isinstance(index, bool) or index not in state.order:
+            raise ValueError("Choose a valid Photoshop layer")
+        if not isinstance(target_position, int) or isinstance(target_position, bool):
+            raise ValueError("Target layer position must be an integer")
+        target = max(0, min(len(state.order) - 1, target_position))
+        position = state.order.index(index)
+        if target == position:
+            return index
+        order = list(state.order)
+        order.pop(position)
+        order.insert(target, index)
+        self._layer_change(layerediting.LayerState(tuple(order), state.visible))
+        return index
+
     def apply(self, channel: int, bounds, coverage: np.ndarray, shade: int, invert: bool = False):
         doc = self.document
         if doc.bits not in (8, 16) or doc.color_mode == "Palette":

@@ -3,7 +3,7 @@ from dataclasses import replace
 import math
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout,
-                               QLabel, QPushButton, QVBoxLayout, QWidget)
+                               QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget)
 
 from .svg import Placement
 from .history import next_order
@@ -20,6 +20,8 @@ class VectorsPanel(QWidget):
     expand_requested = Signal()
     layer_requested = Signal()
     flatten_requested = Signal()
+    center_requested = Signal()
+    fit_inside_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -67,6 +69,14 @@ class VectorsPanel(QWidget):
         self.lock.setChecked(True)
         form.addRow(self.lock)
         layout.addWidget(self.form)
+        align_row = QHBoxLayout()
+        self.center_button = QPushButton("Center on canvas")
+        self.center_button.clicked.connect(self.center_requested)
+        self.fit_inside_button = QPushButton("Fit inside canvas")
+        self.fit_inside_button.clicked.connect(self.fit_inside_requested)
+        align_row.addWidget(self.center_button)
+        align_row.addWidget(self.fit_inside_button)
+        layout.addLayout(align_row)
         self.expand_button = QPushButton("Expand canvas to SVG…")
         self.expand_button.clicked.connect(self.expand_requested)
         layout.addWidget(self.expand_button)
@@ -100,7 +110,9 @@ class VectorsPanel(QWidget):
         self.import_button.setEnabled(enabled)
         self.load_button.setEnabled(enabled)
         present = enabled and self.artwork is not None
-        for control in (self.form, self.visible, self.save_button, self.export_button, self.remove_button, self.expand_button, self.layer_button):
+        for control in (self.form, self.visible, self.center_button, self.fit_inside_button,
+                        self.save_button, self.export_button, self.remove_button,
+                        self.expand_button, self.layer_button):
             control.setEnabled(present)
 
     def set_artwork(self, artwork=None, placement=None, dirty=False):
@@ -174,6 +186,30 @@ class VectorsPanel(QWidget):
         self._saved_binding = self._image_binding
         self.dirty = False
 
+    def set_placement(self, placement: Placement):
+        if self.placement is None or placement == self.placement:
+            return
+        self.discard_redo()
+        self._history.append(placement)
+        self._orders.append(next_order())
+        # Alignment records contain five numbers and a boolean, not pixels.
+        self._history = self._history[-256:]
+        self._orders = self._orders[-256:]
+        self._history_position = len(self._history) - 1
+        self._display(placement)
+        self.placement_edited.emit()
+        self.placement_changed.emit(placement)
+
+    def move_by(self, dx_mm: float, dy_mm: float):
+        if self.placement is None or not (dx_mm or dy_mm):
+            return
+        try:
+            moved = replace(self.placement, x_mm=self.placement.x_mm + dx_mm,
+                            y_mm=self.placement.y_mm + dy_mm)
+        except ValueError:
+            return
+        self.set_placement(moved)
+
     def change(self, changed=None):
         if self._updating or self.placement is None:
             return
@@ -193,13 +229,4 @@ class VectorsPanel(QWidget):
             return
         if placement == self.placement:
             return
-        self.discard_redo()
-        self._history.append(placement)
-        self._orders.append(next_order())
-        # Alignment records contain five numbers and a boolean, not pixels.
-        self._history = self._history[-256:]
-        self._orders = self._orders[-256:]
-        self._history_position = len(self._history) - 1
-        self._display(placement)
-        self.placement_edited.emit()
-        self.placement_changed.emit(placement)
+        self.set_placement(placement)
