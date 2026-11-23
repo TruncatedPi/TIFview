@@ -1,4 +1,4 @@
-TIFview 0.8.0 - printing image/channel/layer viewer, SVG alignment and pixel editor
+TIFview 0.9.0 - printing image/channel/layer viewer, SVG alignment and pixel editor
 
 Windows 10/11, 64-bit (x64).
 
@@ -13,8 +13,9 @@ To update, extract a newer release into a new folder. To remove, delete this
 application folder. The original image stays untouched; Save TIFF copy writes
 edited channel pixels into a separate file.
 
-Mouse wheel: zoom. Pan tool: drag image. Middle button: pan while drawing.
-F: fit. 1: actual pixels. Ctrl+Z: undo. Ctrl+Y: redo. Ctrl+Shift+S: Save TIFF copy.
+Mouse wheel: zoom. Move (Pan) tool: drag image or drag an imported SVG overlay.
+Middle mouse button or Spacebar: pan while drawing. F / Ctrl+0: fit.
+1 / Ctrl+1: actual pixels. Ctrl+Z: undo. Ctrl+Y: redo. Ctrl+S / Ctrl+Shift+S: Save TIFF copy.
 
 The running version stays visible in the title and at the bottom right.
 Help > About TIFview shows the version and this copy's location.
@@ -100,3 +101,12 @@ exact undo/redo and saves into a separate TIFF copy; save that TIFF first, then
 the alignment job. Compatible raster layers can be retained; vector/dependent
 layers, shifted masks or white padding can require a merged copy. The save
 dialog explains this. New enlarged copies need Photoshop/PrintExp validation.
+
+Version 0.9.0 workflow highlights: Save stays enabled while previews render and
+queues automatically; saving prompts to continue if the source file timestamp
+changed on disk, and offers an optional fast save without full pixel read-back
+verification. Incompatible layer stacks can be flattened with Flatten to single
+layer in Layers (or Flatten old layers to add SVG in Vectors). The dark dock UI
+adds layer thumbnails, drag-and-drop layer reordering, a right-click layer menu,
+the Isolate selected layer toggle, Center/Fit inside canvas SVG controls, and
+raised 150 million-pixel / 1024 MiB decoded image limits.

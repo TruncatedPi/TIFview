@@ -68,6 +68,11 @@ def run(image_path: str, report_path: str) -> int:
             if doc is None:
                 raise AssertionError("No document loaded")
             assert __version__ in window.windowTitle() and window.version_label.isVisible()
+            assert window.splitter.widget(0) is window.view
+            assert [a.text() for a in window.menuBar().actions()] == [
+                "File", "Edit", "Image", "Layer", "Spots", "Vectors", "View", "Help"
+            ]
+            assert set(window.tool_action_map) == {"Pan", "Box", "Ellipse", "Line", "Text"}
             # The build script supplies a known synthetic RGB + two spots + alpha TIFF.
             assert [c.name for c in doc.channels] == [
                 "Red", "Green", "Blue", "White Ink", "Varnish", "Saved selection"]
@@ -153,7 +158,7 @@ def run(image_path: str, report_path: str) -> int:
             window.channels.setCurrentItem(window.channels.topLevelItem(0))
             window.refresh()
             assert window.previewer is not None
-            assert not window.save_action.isEnabled()
+            assert window.save_action.isEnabled()
             window.channels.topLevelItem(1).setCheckState(0, Qt.CheckState.Unchecked)
             window.overlays.setChecked(True)
             window.channels.topLevelItem(4).setCheckState(0, Qt.CheckState.Checked)
@@ -189,6 +194,8 @@ def run(image_path: str, report_path: str) -> int:
                 "SYNTHETIC original base", "SYNTHETIC overlay"]
             assert window.doc.layer_state.order == (1, 0)
             assert window.doc.layer_state.visible == frozenset({0})
+            assert window.layers_panel.isolate_checkbox.isChecked()
+            assert not window.layers_panel.tree.topLevelItem(1).icon(0).isNull()
             assert window.view.drawing_enabled and window.edit_toolbar.isEnabled()
             layer_start = window.doc.samples.copy()
             window.layers_panel.tree.setCurrentItem(window.layers_panel.tree.topLevelItem(1))
@@ -343,14 +350,14 @@ def run(image_path: str, report_path: str) -> int:
             result.update(passed=True, channels=doc.report()["channels"],
                           version=__version__,
                           checks=["visible application version and About location", "LZW decoding", "Photoshop names and types", "Qt channel pixels",
-                                  "spot sequence labels", "background previews and stale-result cancellation",
+                                  "spot sequence labels", "background previews, queued save availability and stale-result cancellation",
                                   "actual pixels, zoom and fit", "ellipse, box, line and text pixels",
                                   "create, duplicate, reorder, properties and delete spots", "exact structural undo and redo",
                                   "exact undo and redo", "TIFF save and reopen", "opaque RLE layers and ICC",
                                   "rebuilt image pyramid", "lazy Qt layer pixels", "layer visibility and order",
                                   "synchronized native layer composite and transparency", "saved compressed layer pixels",
                                   "mixed layer undo and redo", "frozen Qt SVG renderer and alignment undo/redo",
-                                  "physical SVG export and alignment job round trip", "absolute SVG shape and stroke units", "manual canvas edge controls", "SVG pixel layer save, readback and undo", "drawn pixel layer display, spot retention, copy save and undo", "native solid vector shape without cached pixels", "transparent canvas growth, raster layers, copy save and exact undo", "untouched source"])
+                                  "physical SVG export and alignment job round trip", "absolute SVG shape and stroke units", "manual canvas edge controls", "SVG pixel layer save, readback and undo", "drawn pixel layer display, spot retention, copy save and undo", "native solid vector shape without cached pixels", "transparent canvas growth, raster layers, copy save and exact undo", "untouched source", "Photoshop-style workspace, menus, tool strip and layer thumbnails"])
         except Exception as exc:
             result.update(passed=False, error=traceback.format_exc())
         if window.previewer is not None:

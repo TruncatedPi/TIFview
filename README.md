@@ -1,4 +1,4 @@
-# TIFview 0.8.0
+# TIFview 0.9.0
 
 [![Windows checks](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml/badge.svg)](https://github.com/TruncatedPi/TIFview/actions/workflows/windows.yml)
 
@@ -36,7 +36,7 @@ the other spots; click **Composite** to return to the colour image.
 **Windows 10/11, 64-bit (x64). Python is included in the portable download.**
 
 1. Open [Downloads / latest release](https://github.com/TruncatedPi/TIFview/releases/latest).
-2. Download [**TIFview-0.8.0-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.8.0/TIFview-0.8.0-windows-x64.zip) and extract the entire ZIP.
+2. Download [**TIFview-0.9.0-windows-x64.zip**](https://github.com/TruncatedPi/TIFview/releases/download/v0.9.0/TIFview-0.9.0-windows-x64.zip) and extract the entire ZIP.
 3. Open the extracted **TIFview** folder and double-click **TIFview.exe**.
 
 Keep the `_internal` folder with the executable. No Python installation, Git,
@@ -108,7 +108,7 @@ No virtual-environment activation is needed. For console diagnostics, run
   shows it even if its composite checkbox is off.
 - **Invert** changes the selected preview. Paint shades follow that displayed
   grayscale polarity; toggling Invert alone does not change stored pixels.
-- Wheel to zoom; drag with the **Pan** tool; **F** to fit; **1** for one source pixel per physical
+- Wheel to zoom; drag with the **Move** (**Pan**) tool (or hold **Spacebar** while drawing); drag imported SVGs on the canvas with Move; **F**/**Ctrl+0** to fit; **1**/**Ctrl+1** for one source pixel per physical
   screen pixel. The zoom percentage accounts for Windows display scaling.
 - Hover over pixels to read current channel sample values, including 16-bit values.
   Coordinates refer to the displayed orientation.
@@ -323,7 +323,7 @@ Use the **Spots** menu, or right-click a channel row:
 All operations support **Ctrl+Z/Ctrl+Y**, including when mixed with painting.
 Check the numbered spot list before **Save TIFF copy**: PrintExp uses its sequence.
 Structural undo stores added/deleted planes and small layout records rather than whole
-images. New channels still allocate native image memory and count toward the 512 MiB limit.
+images. New channels still allocate native image memory and count toward the 1024 MiB limit.
 Unknown channel mappings, Quick Mask references and unsupported custom spot halftones
 are rejected instead of silently attaching metadata to another ink.
 
@@ -465,7 +465,7 @@ selection, visibility and zoom controls are tested.
 - Lab/YCbCr/multichannel-inkset TIFFs, mixed bit depths, float/signed samples,
   PSD/PSB, and arbitrary Photoshop resource variants are not implemented.
 - The prototype loads the whole primary image into RAM. Its current TIFF limit
-  is 40 million pixels or 512 MiB decoded samples. Very large printing files
+  is 150 million pixels or 1024 MiB decoded samples. Very large printing files
   need a later tile/region reader. Grayscale channels use a direct 8-bit screen
   plane (with rounded full-range conversion for 16-bit sources). A bounded 96 MiB
   cache accelerates revisiting views and is invalidated after edits/undo/redo.
@@ -475,8 +475,9 @@ selection, visibility and zoom controls are tested.
   to the original source coordinates. **100% or wheel zoom requests full resolution**;
   the preview updates when ready. Individual grayscale channels always use full
   source resolution. Pixel inspection and editing always use the native samples.
-  Edits and saves wait for a background colour preview to finish or cancel, so
-  it cannot read pixels while they are being changed. Channels, pan and zoom stay usable.
+  **Save stays enabled** while a background colour preview runs: requesting a save
+  interrupts the preview and queues the write automatically once it stops, so
+  pixels are never read concurrently while changing. Channels, pan and zoom stay usable.
   The first edit also copies the native sample array; saving needs memory for
   verification and the pyramid.
 

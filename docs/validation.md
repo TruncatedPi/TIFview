@@ -465,3 +465,22 @@ The packaged check now creates a drawn layer after SVG import and canvas growth,
 verifies visible green pixels and untouched spot/selection planes, saves and
 reopens a layered TIFF, and checks undo/redo. Photoshop/PrintExp validation of
 this new drawing workflow remains pending.
+
+## Reliability, real-file fixes and Photoshop-style UI (v0.9.0)
+
+The full local pytest suite passes **782 tests** (3 optional private single-file
+checks skipped when `TIFVIEW_SAMPLE` is unset), including dedicated Pass 1
+regression coverage (`tests/test_pass1_fixes.py`) and Pass 2 UI/interaction
+coverage (`tests/test_pass2_ui.py`), following earlier Pass 1 workflow validation
+across 14 real print `.tif` and 10 real `.svg` files. Verified behaviors include
+queued saving during active previews, source timestamp-change confirmation prompts,
+CMYK soft-alpha baseline matching and canvas expansion, preserving generated
+layers across repeated canvas growth on unlayered TIFFs, atomic `Flatten to single
+layer` + undo/redo, Inkscape/class-style SVG normalization, Photoshop-style dock
+layout, Spacebar temporary pan, direct SVG canvas drag (`Center` / `Fit inside`),
+layer thumbnails, checkbox isolation toggle, and single-step stack reordering.
+
+The frozen Windows executable passes all **29 packaged checks**, including main
+menu/tool-strip layout, enabled Save availability while previews render, and
+Layers panel isolation/thumbnail checks. Photoshop and PrintExp verification for
+newly flattened, expanded, and drawn-layer copies remains pending in this trial.
